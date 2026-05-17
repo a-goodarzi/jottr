@@ -417,6 +417,11 @@ class TextEditorApp(QMainWindow):
         browser_action.setShortcut(QKeySequence("Ctrl+Shift+B"))
         browser_action.setToolTip(f"Toggle Browser (Ctrl+Shift+B)")
         self.toolbar.addAction(browser_action)
+
+        markdown_action = create_action("insert-text", "Markdown", self.toggle_markdown_preview)
+        markdown_action.setShortcut(QKeySequence("Ctrl+Shift+M"))
+        markdown_action.setToolTip("Toggle Markdown Preview (Ctrl+Shift+M)")
+        self.toolbar.addAction(markdown_action)
         
         # Zoom controls
         zoom_in_action = create_action("zoom-in", "Zoom In", self.zoom_in)
@@ -542,6 +547,9 @@ class TextEditorApp(QMainWindow):
         
         browser_action = view_menu.addAction('Toggle Browser', self.toggle_browser)
         browser_action.setShortcut(QKeySequence("Ctrl+Shift+B"))
+
+        markdown_action = view_menu.addAction('Toggle Markdown Preview', self.toggle_markdown_preview)
+        markdown_action.setShortcut(QKeySequence("Ctrl+Shift+M"))
         
         view_menu.addSeparator()
         
@@ -628,6 +636,8 @@ class TextEditorApp(QMainWindow):
                 tab = self.new_editor_tab()
                 tab.editor.setPlainText(content)
                 tab.current_file = file_path
+                if tab.is_markdown_file(file_path):
+                    tab.set_markdown_preview_visible(True)
                 current_index = self.tab_widget.indexOf(tab)
                 self.tab_widget.setTabText(current_index, os.path.basename(file_path))
                 return True
@@ -722,6 +732,7 @@ class TextEditorApp(QMainWindow):
         # Set content and make read-only
         help_tab.editor.setPlainText(help_content)
         help_tab.editor.setReadOnly(True)
+        help_tab.set_markdown_preview_visible(True)
         
         # Set tab title
         current_index = self.tab_widget.indexOf(help_tab)
@@ -828,13 +839,29 @@ class TextEditorApp(QMainWindow):
             self.settings_manager.save_setting('search_sites', settings['search_sites'])
             self.settings_manager.save_setting('user_dictionary', settings['user_dictionary'])
             self.settings_manager.save_setting('ui_theme', settings['ui_theme'])
+            self.settings_manager.save_setting('markdown_scroll_sync', settings['markdown_scroll_sync'])
+            self.settings_manager.save_setting('editor_line_numbers', settings['editor_line_numbers'])
             self.apply_ui_theme(settings['ui_theme'])  # Apply the new theme immediately
+            self.apply_editor_line_numbers(settings['editor_line_numbers'])
 
     def toggle_browser(self):
         """Toggle browser pane in current tab"""
         current_tab = self.tab_widget.currentWidget()
         if current_tab:
             current_tab.toggle_pane("browser")
+
+    def apply_editor_line_numbers(self, visible):
+        """Apply line number visibility to all open editor tabs."""
+        for i in range(self.tab_widget.count()):
+            tab = self.tab_widget.widget(i)
+            if isinstance(tab, EditorTab):
+                tab.set_line_numbers_visible(visible)
+
+    def toggle_markdown_preview(self):
+        """Toggle markdown preview in current editor tab"""
+        current_tab = self.tab_widget.currentWidget()
+        if current_tab and isinstance(current_tab, EditorTab):
+            current_tab.toggle_markdown_preview()
 
     def toggle_find(self):
         """Toggle find/replace in current editor tab"""
@@ -885,7 +912,7 @@ class TextEditorApp(QMainWindow):
                 self,
                 "Open File",
                 "",
-                "Text Files (*.txt);;All Files (*.*)"
+                "Markdown Files (*.md *.markdown);;Text Files (*.txt);;All Files (*.*)"
             )
             if not file_path:  # User cancelled
                 return
@@ -898,6 +925,8 @@ class TextEditorApp(QMainWindow):
             with open(file_path, 'r', encoding='utf-8') as f:
                 editor_tab.editor.setPlainText(f.read())
                 editor_tab.current_file = file_path
+                if editor_tab.is_markdown_file(file_path):
+                    editor_tab.set_markdown_preview_visible(True)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not open file: {str(e)}")
             return
@@ -913,6 +942,8 @@ class TextEditorApp(QMainWindow):
         """Set up additional keyboard shortcuts"""
         find_shortcut = QShortcut(QKeySequence.Find, self)  # Typically Ctrl+F
         find_shortcut.activated.connect(self.toggle_find)
+        markdown_shortcut = QShortcut(QKeySequence("Ctrl+Shift+M"), self)
+        markdown_shortcut.activated.connect(self.toggle_markdown_preview)
 
     def handle_unsaved_changes(self):
         """Handle unsaved changes before closing"""

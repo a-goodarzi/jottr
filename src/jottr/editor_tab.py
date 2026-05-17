@@ -9,7 +9,7 @@ if os.path.exists(vendor_dir):
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
                             QTextEdit, QListWidget, QInputDialog, QMenu, QFileDialog, QDialog,
                             QToolBar, QAction, QCompleter, QListWidgetItem, QLineEdit, QPushButton, QMessageBox, QLabel, QShortcut, QToolTip)
-from PyQt5.QtCore import Qt, QUrl, QTimer, QStringListModel, QRegExp, QEvent
+from PyQt5.QtCore import Qt, QUrl, QTimer, QStringListModel, QRegExp, QEvent, QSize, QRect
 from PyQt5.QtGui import (QTextCharFormat, QSyntaxHighlighter, QIcon, QFont, QKeySequence, 
                         QPainter, QPen, QColor, QFontMetrics, QTextDocument, QTextCursor)
 from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEnginePage
@@ -20,14 +20,29 @@ import json
 import time
 from theme_manager import ThemeManager
 import hashlib
+import html
+import re
+import base64
+import mimetypes
+
+try:
+    import markdown as markdown_lib
+    MARKDOWN_LIB_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    markdown_lib = None
+    MARKDOWN_LIB_AVAILABLE = False
 
 # Try enchant first, fallback to pyspellchecker
+try:
+    from spellchecker import SpellChecker
+except (ImportError, ModuleNotFoundError):
+    SpellChecker = None
+
 try:
     from enchant import Dict, DictNotFoundError
     USE_ENCHANT = True
 except (ImportError, ModuleNotFoundError) as e:
     print("Enchant not available, falling back to pyspellchecker:", str(e))
-    from spellchecker import SpellChecker
     USE_ENCHANT = False
 
 class SpellCheckHighlighter(QSyntaxHighlighter):
@@ -206,6 +221,18 @@ class CustomTextEdit(QTextEdit):
                 
         super().keyPressEvent(event)
 
+class LineNumberArea(QWidget):
+    def __init__(self, editor):
+        super().__init__(editor)
+        self.editor = editor
+
+    def sizeHint(self):
+        return QSize(self.editor.line_number_area_width(), 0)
+
+    def paintEvent(self, event):
+        self.editor.paint_line_numbers(event)
+
+
 class CompletingTextEdit(QTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -213,6 +240,12 @@ class CompletingTextEdit(QTextEdit):
         self.completion_text = ""
         self.completion_start = None
         self.suppress_completion = False
+        self.line_numbers_visible = False
+        self.line_number_area = LineNumberArea(self)
+        self.line_number_area.hide()
+        self.document().blockCountChanged.connect(self.update_line_number_area_width)
+        self.verticalScrollBar().valueChanged.connect(self.update_line_number_area)
+        self.textChanged.connect(self.update_line_number_area)
         
         # Initialize spell checker
         if USE_ENCHANT:
@@ -223,6 +256,59 @@ class CompletingTextEdit(QTextEdit):
                 print("Fallback to pyspellchecker in CompletingTextEdit")
         else:
             self.spell_checker = SpellChecker()
+
+    def line_number_area_width(self):
+        digits = max(2, len(str(max(1, self.document().blockCount()))))
+        return 10 + self.fontMetrics().horizontalAdvance('9') * digits
+
+    def set_line_numbers_visible(self, visible):
+        self.line_numbers_visible = visible
+        self.line_number_area.setVisible(visible)
+        self.update_line_number_area_width()
+        self.update_line_number_area()
+
+    def update_line_number_area_width(self):
+        self.setViewportMargins(self.line_number_area_width() if self.line_numbers_visible else 0, 0, 0, 0)
+
+    def update_line_number_area(self):
+        if self.line_numbers_visible:
+            self.line_number_area.update()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        rect = self.contentsRect()
+        self.line_number_area.setGeometry(QRect(rect.left(), rect.top(), self.line_number_area_width(), rect.height()))
+
+    def paint_line_numbers(self, event):
+        painter = QPainter(self.line_number_area)
+        painter.fillRect(event.rect(), QColor(245, 245, 245))
+        painter.setPen(QColor(120, 120, 120))
+
+        block = self.document().firstBlock()
+        layout = self.document().documentLayout()
+        viewport_top = self.viewport().rect().top()
+        viewport_bottom = self.viewport().rect().bottom()
+        scroll_offset = self.verticalScrollBar().value()
+
+        while block.isValid():
+            block_rect = layout.blockBoundingRect(block)
+            top = int(block_rect.top() - scroll_offset)
+            bottom = int(block_rect.bottom() - scroll_offset)
+
+            if bottom >= viewport_top and top <= viewport_bottom:
+                number = str(block.blockNumber() + 1)
+                painter.drawText(
+                    0,
+                    top,
+                    self.line_number_area.width() - 4,
+                    self.fontMetrics().height(),
+                    Qt.AlignRight,
+                    number
+                )
+
+            if top > viewport_bottom:
+                break
+            block = block.next()
 
     def keyPressEvent(self, event):
         """Handle key events"""
@@ -333,6 +419,14 @@ class EditorTab(QWidget):
         self.current_font = self.settings_manager.get_font()
         self.web_view = None  # Initialize to None
         self.main_window = None  # Initialize main_window to None
+        self.markdown_preview_visible = False
+        self.preview_scroll_pending = False
+        self.editor_scroll_pending = False
+        self.syncing_markdown_scroll = False
+        self.preview_scroll_timer = None
+        self.pending_preview_source_line = None
+        self.ignore_preview_scroll_until = 0
+        self.preview_user_scroll_until = 0
         
         # Add USE_ENCHANT as instance attribute
         self.USE_ENCHANT = USE_ENCHANT  # Use the module-level variable
@@ -359,6 +453,10 @@ class EditorTab(QWidget):
         self.backup_timer = QTimer()
         self.backup_timer.timeout.connect(self.force_save)
         self.backup_timer.start(5000)  # Backup every 5 seconds
+
+        self.preview_scroll_timer = QTimer()
+        self.preview_scroll_timer.timeout.connect(self.schedule_editor_scroll_sync)
+        self.preview_scroll_timer.setInterval(250)
         
         # Apply theme
         ThemeManager.apply_theme(self.editor, self.settings_manager.get_theme())
@@ -380,6 +478,9 @@ class EditorTab(QWidget):
         self.selected_suggestion_index = -1
         self.current_suggestions = []
         self.editor.textChanged.connect(self.handle_text_changed)
+        self.editor.textChanged.connect(self.update_markdown_preview)
+        self.editor.cursorPositionChanged.connect(self.schedule_markdown_cursor_sync)
+        self.editor.verticalScrollBar().valueChanged.connect(self.schedule_markdown_scroll_sync)
 
     def setup_ui(self):
         """Setup the UI components"""
@@ -393,7 +494,26 @@ class EditorTab(QWidget):
         self.editor = CompletingTextEdit(self)  # Pass self as parent
         self.editor.setContextMenuPolicy(Qt.CustomContextMenu)
         self.editor.customContextMenuRequested.connect(self.show_context_menu)
+        self.editor.set_line_numbers_visible(
+            self.settings_manager.get_setting('editor_line_numbers', True)
+        )
         self.update_font(self.current_font)
+
+        self.editor_pane = QWidget()
+        editor_pane_layout = QHBoxLayout(self.editor_pane)
+        editor_pane_layout.setContentsMargins(0, 0, 0, 0)
+        editor_pane_layout.setSpacing(0)
+
+        self.markdown_splitter = QSplitter(Qt.Horizontal)
+        self.markdown_splitter.addWidget(self.editor)
+
+        self.markdown_preview = QWebEngineView()
+        self.markdown_preview.setVisible(False)
+        self.markdown_preview.installEventFilter(self)
+        self.markdown_splitter.addWidget(self.markdown_preview)
+        self.markdown_splitter.setSizes([600, 600])
+        self.markdown_splitter.splitterMoved.connect(self.save_pane_states)
+        editor_pane_layout.addWidget(self.markdown_splitter)
         
         # Connect text changed signal to update status
         self.editor.textChanged.connect(self.update_status)
@@ -402,7 +522,7 @@ class EditorTab(QWidget):
         self.highlighter = SpellCheckHighlighter(self.editor.document(), self.settings_manager)
         
         # Add editor to splitter
-        self.splitter.addWidget(self.editor)
+        self.splitter.addWidget(self.editor_pane)
         
         # Create snippet widget
         self.snippet_widget = QWidget()
@@ -504,16 +624,21 @@ class EditorTab(QWidget):
         states = self.settings_manager.get_setting('pane_states', {
             'snippets_visible': False,
             'browser_visible': False,
+            'markdown_preview_visible': False,
+            'markdown_sizes': [600, 600],
             'sizes': [700, 300, 300]
         })
         
         # Apply visibility
         self.snippet_widget.setVisible(states.get('snippets_visible', False))
         self.browser_widget.setVisible(states.get('browser_visible', False))
+        self.set_markdown_preview_visible(False, save_state=False)
         
         # Apply sizes
         if 'sizes' in states:
             self.splitter.setSizes(states['sizes'])
+        if 'markdown_sizes' in states:
+            self.markdown_splitter.setSizes(states['markdown_sizes'])
         
         # Connect splitter moved signal to save states
         self.splitter.splitterMoved.connect(self.save_pane_states)
@@ -672,7 +797,7 @@ class EditorTab(QWidget):
                 self,
                 "Save File",
                 os.path.expanduser("~"),
-                "Text Files (*.txt);;All Files (*.*)"
+                "Markdown Files (*.md *.markdown);;Text Files (*.txt);;All Files (*.*)"
             )
             if file_name:
                 self.current_file = file_name
@@ -697,11 +822,13 @@ class EditorTab(QWidget):
 
     def open_file(self):
         file_name, _ = QFileDialog.getOpenFileName(self, "Open File", "", 
-                                                 "Text Files (*.txt);;All Files (*)")
+                                                 "Markdown Files (*.md *.markdown);;Text Files (*.txt);;All Files (*)")
         if file_name:
             self.current_file = file_name
-            with open(file_name, 'r') as file:
+            with open(file_name, 'r', encoding='utf-8') as file:
                 self.editor.setPlainText(file.read())
+            if self.is_markdown_file(file_name):
+                self.set_markdown_preview_visible(True)
             
             # Update tab title to show file name
             if self.main_window and hasattr(self.main_window, 'tab_widget'):
@@ -1111,6 +1238,8 @@ class EditorTab(QWidget):
                 selection-background-color: {self.editor.palette().highlight().color().name()};
             }}
         """)
+        self.editor.update_line_number_area_width()
+        self.editor.update_line_number_area()
 
     def apply_theme(self, theme_name):
         """Apply theme while preserving font properties"""
@@ -1120,6 +1249,1066 @@ class EditorTab(QWidget):
         # After applying theme, reapply font to ensure properties are preserved
         if hasattr(self, 'current_font'):
             self.update_font(self.current_font)
+        self.update_markdown_preview()
+
+    def set_line_numbers_visible(self, visible):
+        """Show or hide editor line numbers."""
+        self.editor.set_line_numbers_visible(visible)
+
+    def is_markdown_file(self, file_path=None):
+        """Return True when a path should be treated as markdown."""
+        path = file_path or self.current_file or ""
+        return os.path.splitext(path.lower())[1] in ('.md', '.markdown', '.mdown', '.mkd')
+
+    def set_markdown_preview_visible(self, visible, save_state=True):
+        """Show or hide the rendered markdown preview."""
+        self.markdown_preview_visible = visible
+        self.markdown_preview.setVisible(visible)
+        self.markdown_preview.setMinimumWidth(240 if visible else 0)
+        if visible:
+            if self.preview_scroll_timer:
+                self.preview_scroll_timer.start()
+            if hasattr(self, 'markdown_splitter') and self.markdown_splitter.sizes()[1] < 100:
+                self.markdown_splitter.setSizes([600, 600])
+            self.update_markdown_preview()
+        else:
+            if self.preview_scroll_timer:
+                self.preview_scroll_timer.stop()
+        if save_state:
+            self.save_pane_states()
+
+    def toggle_markdown_preview(self):
+        """Toggle the rendered markdown preview pane."""
+        self.set_markdown_preview_visible(not self.markdown_preview_visible)
+
+    def update_markdown_preview(self):
+        """Render editor markdown into the preview pane."""
+        if not hasattr(self, 'markdown_preview') or not self.markdown_preview_visible:
+            return
+
+        base_url = QUrl.fromLocalFile(os.path.dirname(self.current_file) + os.sep) if self.current_file else QUrl()
+        self.markdown_preview.setHtml(self.render_markdown_html(self.editor.toPlainText()), base_url)
+        QTimer.singleShot(100, self.sync_markdown_preview_scroll)
+
+    def get_editor_top_visible_line(self):
+        """Return the 1-based source line nearest the top of the editor viewport."""
+        cursor = self.editor.cursorForPosition(self.editor.viewport().rect().topLeft())
+        return cursor.blockNumber() + 1
+
+    def schedule_markdown_cursor_sync(self):
+        """Sync preview to the line currently being edited."""
+        if self.syncing_markdown_scroll:
+            return
+
+        self.pending_preview_source_line = self.editor.textCursor().blockNumber() + 1
+        self.schedule_markdown_scroll_sync()
+
+    def schedule_markdown_scroll_sync(self, *_args):
+        """Debounce editor scroll events before updating preview scroll."""
+        if (not self.settings_manager.get_setting('markdown_scroll_sync', True) or
+                not self.markdown_preview_visible or
+                self.syncing_markdown_scroll or
+                self.preview_scroll_pending):
+            return
+
+        self.preview_scroll_pending = True
+        QTimer.singleShot(16, self.sync_markdown_preview_scroll)
+
+    def sync_markdown_preview_scroll(self):
+        """Scroll the markdown preview to match the editor's relative position."""
+        self.preview_scroll_pending = False
+        if (not self.settings_manager.get_setting('markdown_scroll_sync', True) or
+                not self.markdown_preview_visible or
+                not hasattr(self, 'markdown_preview')):
+            return
+
+        source_line = self.pending_preview_source_line or self.get_editor_top_visible_line()
+        self.pending_preview_source_line = None
+        self.syncing_markdown_scroll = True
+        self.ignore_preview_scroll_until = time.time() + 0.75
+        self.markdown_preview.page().runJavaScript(
+            """
+            (function(targetLine) {
+                const nodes = Array.from(document.querySelectorAll('[data-source-line]'));
+                if (!nodes.length) return;
+
+                let target = nodes[0];
+                for (const node of nodes) {
+                    const line = Number(node.dataset.sourceLine);
+                    if (line > targetLine) break;
+                    target = node;
+                }
+
+                const top = target.getBoundingClientRect().top + window.scrollY - 16;
+                window.scrollTo(0, Math.max(0, top));
+            })(""" + str(source_line) + """);
+            """,
+            lambda _result: setattr(self, 'syncing_markdown_scroll', False)
+        )
+
+    def schedule_editor_scroll_sync(self):
+        """Debounce preview scroll events before updating editor scroll."""
+        if (not self.settings_manager.get_setting('markdown_scroll_sync', True) or
+                not self.markdown_preview_visible or
+                self.syncing_markdown_scroll or
+                time.time() < self.ignore_preview_scroll_until or
+                time.time() > self.preview_user_scroll_until or
+                self.editor_scroll_pending):
+            return
+
+        self.editor_scroll_pending = True
+        QTimer.singleShot(80, self.sync_editor_scroll_from_preview)
+
+    def sync_editor_scroll_from_preview(self):
+        """Scroll the editor to match the preview's relative position."""
+        self.editor_scroll_pending = False
+        if (not self.settings_manager.get_setting('markdown_scroll_sync', True) or
+                not self.markdown_preview_visible or
+                not hasattr(self, 'markdown_preview')):
+            return
+
+        script = """
+            (function() {
+                const nodes = Array.from(document.querySelectorAll('[data-source-line]'));
+                if (!nodes.length) return 1;
+
+                let best = nodes[0];
+                let bestDistance = Infinity;
+                for (const node of nodes) {
+                    const distance = Math.abs(node.getBoundingClientRect().top - 16);
+                    if (distance < bestDistance) {
+                        best = node;
+                        bestDistance = distance;
+                    }
+                }
+                return Number(best.dataset.sourceLine) || 1;
+            })();
+        """
+
+        def apply_editor_scroll(source_line):
+            try:
+                source_line = max(1, int(float(source_line)))
+            except (TypeError, ValueError):
+                return
+
+            block = self.editor.document().findBlockByNumber(source_line - 1)
+            if not block.isValid():
+                return
+
+            scroll_bar = self.editor.verticalScrollBar()
+            layout = self.editor.document().documentLayout()
+            block_top = layout.blockBoundingRect(block).top() - scroll_bar.value()
+
+            self.syncing_markdown_scroll = True
+            scroll_bar.setValue(max(0, round(scroll_bar.value() + block_top - 16)))
+            QTimer.singleShot(0, lambda: setattr(self, 'syncing_markdown_scroll', False))
+
+        self.markdown_preview.page().runJavaScript(script, apply_editor_scroll)
+
+    def render_markdown_html(self, text):
+        """Render a practical markdown subset with stable heading and code styling."""
+        if MARKDOWN_LIB_AVAILABLE:
+            return self.render_markdown_html_with_library(text)
+
+        body = []
+        paragraph = []
+        paragraph_lines = []
+        in_code_block = False
+        code_lines = []
+        code_start_line = None
+        in_math_block = False
+        math_lines = []
+        math_start_line = None
+        list_stack = []
+
+        emoji_map = {
+            "smile": "😄", "grinning": "😀", "joy": "😂", "laughing": "😆",
+            "wink": "😉", "blush": "😊", "heart": "❤️", "broken_heart": "💔",
+            "thumbsup": "👍", "+1": "👍", "thumbsdown": "👎", "-1": "👎",
+            "clap": "👏", "pray": "🙏", "fire": "🔥", "star": "⭐",
+            "sparkles": "✨", "rocket": "🚀", "tada": "🎉", "warning": "⚠️",
+            "x": "❌", "white_check_mark": "✅", "check": "✅", "information_source": "ℹ️",
+            "bulb": "💡", "eyes": "👀", "thinking": "🤔", "cry": "😢",
+            "sob": "😭", "angry": "😠", "poop": "💩", "100": "💯",
+            "memo": "📝", "book": "📖", "computer": "💻", "gear": "⚙️",
+            "bug": "🐛", "lock": "🔒", "unlock": "🔓", "link": "🔗"
+        }
+
+        def is_table_separator(value):
+            cells = EditorTab.split_table_row(value)
+            if len(cells) < 2:
+                return False
+            return all(re.match(r'^:?-{3,}:?$', cell.strip()) for cell in cells)
+
+        def table_alignments(separator):
+            alignments = []
+            for cell in EditorTab.split_table_row(separator):
+                stripped = cell.strip()
+                if stripped.startswith(":") and stripped.endswith(":"):
+                    alignments.append("center")
+                elif stripped.endswith(":"):
+                    alignments.append("right")
+                else:
+                    alignments.append("left")
+            return alignments
+
+        def split_image_target(target):
+            target = target.strip()
+            title = ""
+            if target.startswith("<"):
+                end = target.find(">")
+                if end >= 0:
+                    source = target[1:end].strip()
+                    title = target[end + 1:].strip()
+                else:
+                    source = target.strip("<>").strip()
+            else:
+                match = re.match(r'^(.*?)\s+["\']([^"\']*)["\']\s*$', target)
+                if match:
+                    source = match.group(1).strip()
+                    title = match.group(2)
+                else:
+                    source = target
+            return source, title
+
+        def resolve_local_image_path(source):
+            if source.startswith("file://"):
+                return QUrl(source).toLocalFile()
+
+            current_file = getattr(self, 'current_file', None)
+            if current_file and not os.path.isabs(source):
+                source = os.path.join(os.path.dirname(current_file), source)
+            return os.path.abspath(os.path.expanduser(source))
+
+        def image_file_to_data_url(path):
+            if not os.path.isfile(path):
+                return None
+
+            mime_type, _ = mimetypes.guess_type(path)
+            if not mime_type or not mime_type.startswith("image/"):
+                mime_type = "image/png"
+
+            try:
+                with open(path, "rb") as image_file:
+                    encoded = base64.b64encode(image_file.read()).decode("ascii")
+                return f"data:{mime_type};base64,{encoded}"
+            except OSError:
+                return None
+
+        def resolve_image_source(source):
+            source = source.strip()
+            if source.startswith("<") and source.endswith(">"):
+                source = source[1:-1].strip()
+            if source.startswith(("http://", "https://", "data:")):
+                return html.escape(source, quote=True)
+
+            local_path = resolve_local_image_path(source)
+            data_url = image_file_to_data_url(local_path)
+            if data_url:
+                return html.escape(data_url, quote=True)
+            return html.escape(QUrl.fromLocalFile(local_path).toString(QUrl.FullyEncoded), quote=True)
+
+        def render_inline(value):
+            images = []
+            inline_math = []
+
+            def stash_image(match):
+                alt_text = html.escape(match.group(1), quote=True)
+                source_target, explicit_title = split_image_target(match.group(2))
+                source = resolve_image_source(source_target)
+                title = html.escape(explicit_title or match.group(1), quote=True)
+                images.append(
+                    f'<img src="{source}" alt="{alt_text}" title="{title}">'
+                )
+                return f"\u0000IMG{len(images) - 1}\u0000"
+
+            def stash_inline_math(match):
+                expression = html.escape(match.group(1).strip())
+                inline_math.append(f'<span class="math-inline">\\({expression}\\)</span>')
+                return f"\u0000MATH{len(inline_math) - 1}\u0000"
+
+            value = re.sub(
+                r'!\[([^\]]*)\]\(\s*([^)]+?)\s*\)',
+                stash_image,
+                value
+            )
+            value = re.sub(r'(?<!\\)\$(?!\$)(.+?)(?<!\\)\$', stash_inline_math, value)
+            value = html.escape(value)
+            value = re.sub(r'`([^`]+)`', r'<code>\1</code>', value)
+            value = re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', value)
+            value = re.sub(r'__([^_]+)__', r'<strong>\1</strong>', value)
+            value = re.sub(r'~~(.+?)~~', r'<del>\1</del>', value)
+            value = re.sub(r'(?<!\*)\*([^*\n]+)\*(?!\*)', r'<em>\1</em>', value)
+            value = re.sub(r'(?<!_)_([^_\n]+)_(?!_)', r'<em>\1</em>', value)
+            value = EditorTab.apply_typographer_replacements(value)
+            value = re.sub(
+                r':([a-zA-Z0-9_+\-]+):',
+                lambda match: emoji_map.get(match.group(1), match.group(0)),
+                value
+            )
+            value = re.sub(
+                r'\[([^\]]+)\]\((https?://[^)\s]+)\)',
+                r'<a href="\2">\1</a>',
+                value
+            )
+            for index, image_markup in enumerate(images):
+                value = value.replace(f"\u0000IMG{index}\u0000", image_markup)
+            for index, math_markup in enumerate(inline_math):
+                value = value.replace(f"\u0000MATH{index}\u0000", math_markup)
+            return value
+
+        def flush_paragraph():
+            nonlocal paragraph_lines
+            if paragraph:
+                source_line = paragraph_lines[0] if paragraph_lines else 1
+                body.append(f'<p data-source-line="{source_line}">{render_inline(" ".join(paragraph))}</p>')
+                paragraph.clear()
+                paragraph_lines.clear()
+
+        def close_list():
+            while list_stack:
+                close_list_level()
+
+        def close_list_level():
+            list_state = list_stack.pop()
+            if list_state.get('open_item'):
+                body.append("</li>")
+            body.append(f"</{list_state['type']}>")
+
+        def list_level_from_indent(indent):
+            return indent // 2
+
+        def render_task_list_item_content(item_text):
+            task = re.match(r'^\[([ xX])\]\s*(.*)$', item_text)
+            if not task:
+                return render_inline(item_text)
+
+            checked = ' checked' if task.group(1).lower() == 'x' else ''
+            return (
+                f'<input class="task-list-item-checkbox" type="checkbox" disabled{checked}> '
+                f'{render_inline(task.group(2))}'
+            )
+
+        def render_list_item(line_number, list_type, level, item_text, start_number=None):
+            while list_stack and list_stack[-1]['level'] > level:
+                close_list_level()
+
+            if list_stack and list_stack[-1]['level'] == level and list_stack[-1]['type'] != list_type:
+                close_list_level()
+
+            if not list_stack or list_stack[-1]['level'] < level:
+                start_attr = f' start="{start_number}"' if list_type == "ol" and start_number and start_number != 1 else ""
+                body.append(f"<{list_type}{start_attr}>")
+                list_stack.append({'type': list_type, 'level': level, 'open_item': False})
+
+            if list_stack[-1]['open_item']:
+                body.append("</li>")
+
+            body.append(f'<li data-source-line="{line_number}">{render_task_list_item_content(item_text)}')
+            list_stack[-1]['open_item'] = True
+
+        def render_display_math(source_line, expression):
+            escaped_expression = html.escape(expression.strip())
+            return (
+                f'<div class="math-block" data-source-line="{source_line}">'
+                f'\\[{escaped_expression}\\]</div>'
+            )
+
+        def is_indented_code_line(value):
+            return value.startswith("    ") or value.startswith("\t")
+
+        def strip_code_indent(value):
+            if value.startswith("\t"):
+                return value[1:]
+            if value.startswith("    "):
+                return value[4:]
+            return value
+
+        def collect_indented_code(start_index):
+            code_block_lines = []
+            current_index = start_index
+            while current_index < len(lines):
+                current_line = lines[current_index]
+                if is_indented_code_line(current_line) and not is_list_line(current_line):
+                    code_block_lines.append(strip_code_indent(current_line.rstrip()))
+                    current_index += 1
+                elif not current_line.strip() and code_block_lines:
+                    code_block_lines.append("")
+                    current_index += 1
+                else:
+                    break
+
+            while code_block_lines and code_block_lines[-1] == "":
+                code_block_lines.pop()
+            return code_block_lines, current_index
+
+        def is_list_line(value):
+            return bool(
+                re.match(r'^(\s*)[-*+](?:\s+(.*))?$', value) or
+                re.match(r'^(\s*)(\d+)[.)](?:\s+(.*))?$', value)
+            )
+
+        def render_table(source_line, rows, alignments):
+            header = rows[0]
+            body_rows = rows[2:]
+            html_rows = [f'<table data-source-line="{source_line}">', '<thead><tr>']
+            for index, cell in enumerate(header):
+                alignment = alignments[index] if index < len(alignments) else "left"
+                html_rows.append(f'<th style="text-align: {alignment};">{render_inline(cell.strip())}</th>')
+            html_rows.append('</tr></thead>')
+
+            if body_rows:
+                html_rows.append('<tbody>')
+                for row in body_rows:
+                    html_rows.append('<tr>')
+                    for index, cell in enumerate(row):
+                        alignment = alignments[index] if index < len(alignments) else "left"
+                        html_rows.append(f'<td style="text-align: {alignment};">{render_inline(cell.strip())}</td>')
+                    html_rows.append('</tr>')
+                html_rows.append('</tbody>')
+
+            html_rows.append('</table>')
+            return ''.join(html_rows)
+
+        lines = text.splitlines()
+        line_index = 0
+
+        while line_index < len(lines):
+            line_number = line_index + 1
+            raw_line = lines[line_index]
+            line = raw_line.rstrip()
+            stripped = line.strip()
+
+            if stripped.startswith("```"):
+                if in_code_block:
+                    body.append(
+                        f'<pre data-source-line="{code_start_line or line_number}">'
+                        f"<code>{html.escape(chr(10).join(code_lines))}</code></pre>"
+                    )
+                    code_lines = []
+                    code_start_line = None
+                    in_code_block = False
+                else:
+                    flush_paragraph()
+                    close_list()
+                    in_code_block = True
+                    code_start_line = line_number
+                line_index += 1
+                continue
+
+            if in_code_block:
+                code_lines.append(raw_line)
+                line_index += 1
+                continue
+
+            if stripped.startswith("$$"):
+                if in_math_block:
+                    content = stripped[2:].strip()
+                    if content:
+                        math_lines.append(content)
+                    body.append(render_display_math(math_start_line or line_number, chr(10).join(math_lines)))
+                    math_lines = []
+                    math_start_line = None
+                    in_math_block = False
+                else:
+                    flush_paragraph()
+                    close_list()
+                    after_open = stripped[2:].strip()
+                    if after_open.endswith("$$") and len(after_open) > 2:
+                        body.append(render_display_math(line_number, after_open[:-2]))
+                    else:
+                        in_math_block = True
+                        math_start_line = line_number
+                        if after_open:
+                            math_lines.append(after_open)
+                line_index += 1
+                continue
+
+            if in_math_block:
+                if stripped.endswith("$$"):
+                    before_close = raw_line.rstrip()[:-2].strip()
+                    if before_close:
+                        math_lines.append(before_close)
+                    body.append(render_display_math(math_start_line or line_number, chr(10).join(math_lines)))
+                    math_lines = []
+                    math_start_line = None
+                    in_math_block = False
+                else:
+                    math_lines.append(raw_line)
+                line_index += 1
+                continue
+
+            if not stripped:
+                flush_paragraph()
+                close_list()
+                line_index += 1
+                continue
+
+            unordered = re.match(r'^(\s*)[-*+](?:\s+(.*))?$', line)
+            ordered = re.match(r'^(\s*)(\d+)[.)](?:\s+(.*))?$', line)
+            if unordered or ordered:
+                flush_paragraph()
+                desired_list = "ul" if unordered else "ol"
+                indent = len(unordered.group(1) if unordered else ordered.group(1))
+                item_text = (unordered.group(2) if unordered else ordered.group(3)) or ""
+                start_number = None if unordered else int(ordered.group(2))
+                render_list_item(line_number, desired_list, list_level_from_indent(indent), item_text, start_number)
+                line_index += 1
+                continue
+
+            if is_indented_code_line(raw_line):
+                flush_paragraph()
+                close_list()
+                indented_code_lines, line_index = collect_indented_code(line_index)
+                body.append(
+                    f'<pre data-source-line="{line_number}">'
+                    f"<code>{html.escape(chr(10).join(indented_code_lines))}</code></pre>"
+                )
+                continue
+
+            if ("|" in stripped and
+                    line_index + 1 < len(lines) and
+                    is_table_separator(lines[line_index + 1].strip())):
+                flush_paragraph()
+                close_list()
+                table_rows = [EditorTab.split_table_row(stripped), EditorTab.split_table_row(lines[line_index + 1].strip())]
+                alignments = table_alignments(lines[line_index + 1].strip())
+                line_index += 2
+                while line_index < len(lines) and "|" in lines[line_index].strip():
+                    table_rows.append(EditorTab.split_table_row(lines[line_index].strip()))
+                    line_index += 1
+                body.append(render_table(line_number, table_rows, alignments))
+                continue
+
+            heading = re.match(r'^(#{1,6})\s+(.+)$', stripped)
+            if heading:
+                flush_paragraph()
+                close_list()
+                level = len(heading.group(1))
+                body.append(f'<h{level} data-source-line="{line_number}">{render_inline(heading.group(2))}</h{level}>')
+                line_index += 1
+                continue
+
+            if re.match(r'^([-*_])(?:\s*\1){2,}\s*$', stripped):
+                flush_paragraph()
+                close_list()
+                body.append(f'<hr data-source-line="{line_number}">')
+                line_index += 1
+                continue
+
+            quote = re.match(r'^(>+\s*)+(.*)$', stripped)
+            if quote:
+                flush_paragraph()
+                close_list()
+                quote_text = quote.group(2).strip()
+                body.append(f'<blockquote data-source-line="{line_number}">{render_inline(quote_text)}</blockquote>')
+                line_index += 1
+                continue
+
+            close_list()
+            paragraph.append(stripped)
+            paragraph_lines.append(line_number)
+            line_index += 1
+
+        if in_code_block:
+            body.append(
+                f'<pre data-source-line="{code_start_line or 1}">'
+                f"<code>{html.escape(chr(10).join(code_lines))}</code></pre>"
+            )
+        if in_math_block:
+            body.append(render_display_math(math_start_line or 1, chr(10).join(math_lines)))
+        flush_paragraph()
+        close_list()
+
+        return f"""
+        <html>
+        <head>
+            <style>
+                body {{
+                    color: #202124;
+                    font-family: "DejaVu Sans", "Segoe UI", sans-serif;
+                    font-size: 14px;
+                    line-height: 1.55;
+                    margin: 18px;
+                }}
+                h1, h2, h3, h4, h5, h6 {{
+                    color: #111827;
+                    font-weight: 700;
+                    margin: 1.1em 0 0.45em;
+                }}
+                h1 {{ font-size: 30px; border-bottom: 1px solid #d8dee4; padding-bottom: 6px; }}
+                h2 {{ font-size: 24px; border-bottom: 1px solid #d8dee4; padding-bottom: 4px; }}
+                h3 {{ font-size: 20px; }}
+                h4 {{ font-size: 17px; }}
+                h5 {{ font-size: 15px; }}
+                h6 {{ font-size: 14px; color: #57606a; }}
+                p {{ margin: 0 0 0.8em; }}
+                pre {{
+                    background: #f6f8fa;
+                    border: 1px solid #d0d7de;
+                    border-radius: 6px;
+                    padding: 12px;
+                    white-space: pre-wrap;
+                    margin: 0.9em 0;
+                }}
+                code {{
+                    font-family: "DejaVu Sans Mono", "Consolas", monospace;
+                    background: #f6f8fa;
+                    border-radius: 4px;
+                    padding: 2px 4px;
+                }}
+                pre code {{ background: transparent; padding: 0; }}
+                blockquote {{
+                    border-left: 4px solid #d0d7de;
+                    color: #57606a;
+                    margin: 0.8em 0;
+                    padding-left: 12px;
+                }}
+                ul, ol {{ margin: 0.4em 0 0.8em 1.4em; }}
+                li {{ margin: 0.2em 0; }}
+                .task-list-item-checkbox {{
+                    margin-right: 0.45em;
+                    vertical-align: -0.1em;
+                }}
+                a {{ color: #0969da; }}
+                table {{
+                    border-collapse: collapse;
+                    margin: 1em 0;
+                    width: 100%;
+                    overflow: hidden;
+                }}
+                th, td {{
+                    border: 1px solid #d0d7de;
+                    padding: 6px 10px;
+                    vertical-align: top;
+                }}
+                th {{
+                    background: #f6f8fa;
+                    font-weight: 700;
+                }}
+                tr:nth-child(even) td {{
+                    background: #fbfbfc;
+                }}
+                img {{
+                    display: block;
+                    max-width: 100%;
+                    height: auto;
+                    margin: 0.8em 0;
+                }}
+                .math-inline {{
+                    white-space: nowrap;
+                }}
+                .math-block {{
+                    margin: 1em 0;
+                    overflow-x: auto;
+                }}
+            </style>
+            <script>
+                window.MathJax = {{
+                    tex: {{
+                        inlineMath: [['\\\\(', '\\\\)']],
+                        displayMath: [['\\\\[', '\\\\]']],
+                        processEscapes: true
+                    }},
+                    svg: {{
+                        fontCache: 'global'
+                    }}
+                }};
+            </script>
+            <script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
+        </head>
+        <body>
+            {''.join(body)}
+        </body>
+        </html>
+        """
+
+    @staticmethod
+    def split_table_row(row):
+        """Split a markdown table row, respecting escaped pipe characters."""
+        stripped = row.strip()
+        if stripped.startswith("|"):
+            stripped = stripped[1:]
+        if stripped.endswith("|") and not stripped.endswith("\\|"):
+            stripped = stripped[:-1]
+
+        cells = []
+        current = []
+        escaped = False
+        for char in stripped:
+            if escaped:
+                current.append(char)
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == "|":
+                cells.append(''.join(current).strip())
+                current = []
+            else:
+                current.append(char)
+
+        if escaped:
+            current.append("\\")
+        cells.append(''.join(current).strip())
+        return cells
+
+    def render_markdown_html_with_library(self, text):
+        """Render markdown using Python-Markdown with local preview enhancements."""
+        prepared_text = self.preprocess_markdown_extensions(text)
+        extensions = [
+            'extra',
+            'sane_lists',
+            'smarty',
+            'toc',
+            'nl2br',
+            'admonition',
+            'meta',
+        ]
+
+        body_html = markdown_lib.markdown(
+            prepared_text,
+            extensions=extensions,
+            output_format='html5'
+        )
+        body_html = self.add_source_line_anchors(body_html, text)
+
+        return self.wrap_markdown_preview_html(body_html)
+
+    def preprocess_markdown_extensions(self, text):
+        """Preprocess syntax that Python-Markdown does not handle by default."""
+        text = self.preprocess_task_lists(text)
+        text = re.sub(r'~~(.+?)~~', r'<del>\1</del>', text, flags=re.DOTALL)
+        text = self.apply_typographer_replacements(text)
+        text = self.apply_emoji_shortcodes(text)
+        text = self.preprocess_math_blocks(text)
+        text = re.sub(
+            r'(?<!\\)\$(?!\$)(.+?)(?<!\\)\$',
+            lambda match: f'<span class="math-inline">\\({html.escape(match.group(1).strip())}\\)</span>',
+            text
+        )
+        return text
+
+    def preprocess_task_lists(self, text):
+        """Convert GitHub-style task list markers to disabled checkboxes."""
+        processed_lines = []
+        task_pattern = re.compile(r'^(\s*(?:[-*+]|\d+[.)])\s+)\[([ xX])\]\s*(.*)$')
+        previous_task_indent = None
+        previous_task_type = None
+
+        for line in text.splitlines():
+            match = task_pattern.match(line)
+            if not match:
+                processed_lines.append(line)
+                if line.strip():
+                    previous_task_indent = None
+                    previous_task_type = None
+                continue
+
+            checked = ' checked' if match.group(2).lower() == 'x' else ''
+            checkbox = f'<input class="task-list-item-checkbox" type="checkbox" disabled{checked}>'
+            prefix = self.normalize_markdown_list_indent(match.group(1))
+            indent = len(re.match(r'^(\s*)', prefix).group(1))
+            task_type = "ol" if re.search(r'\d+[.)]\s+$', prefix) else "ul"
+            if (processed_lines and previous_task_indent is not None and
+                    indent <= previous_task_indent and task_type != previous_task_type):
+                processed_lines.append("")
+            processed_lines.append(f'{prefix}{checkbox} {match.group(3)}')
+            previous_task_indent = indent
+            previous_task_type = task_type
+
+        return "\n".join(processed_lines)
+
+    @staticmethod
+    def normalize_markdown_list_indent(prefix):
+        """Normalize two-space nested list indentation for Python-Markdown."""
+        match = re.match(r'^(\s*)((?:[-*+]|\d+[.)])\s+)$', prefix)
+        if not match:
+            return prefix
+
+        indent = match.group(1)
+        marker = match.group(2)
+        spaces = len(indent.replace("\t", "    "))
+        normalized_indent = " " * ((spaces // 2) * 4)
+        return normalized_indent + marker
+
+    def preprocess_math_blocks(self, text):
+        """Convert $$ display math blocks to MathJax-friendly HTML."""
+        lines = text.splitlines()
+        output = []
+        math_lines = []
+        math_start_line = None
+        in_math = False
+
+        for index, line in enumerate(lines, start=1):
+            stripped = line.strip()
+            if stripped.startswith("$$"):
+                if in_math:
+                    tail = stripped[2:].strip()
+                    if tail:
+                        math_lines.append(tail)
+                    output.append(
+                        f'<div class="math-block" data-source-line="{math_start_line or index}">'
+                        f'\\[{html.escape(chr(10).join(math_lines).strip())}\\]</div>'
+                    )
+                    math_lines = []
+                    math_start_line = None
+                    in_math = False
+                else:
+                    after_open = stripped[2:].strip()
+                    if after_open.endswith("$$") and len(after_open) > 2:
+                        output.append(
+                            f'<div class="math-block" data-source-line="{index}">'
+                            f'\\[{html.escape(after_open[:-2].strip())}\\]</div>'
+                        )
+                    else:
+                        in_math = True
+                        math_start_line = index
+                        if after_open:
+                            math_lines.append(after_open)
+                continue
+
+            if in_math:
+                if stripped.endswith("$$"):
+                    before_close = line.rstrip()[:-2].strip()
+                    if before_close:
+                        math_lines.append(before_close)
+                    output.append(
+                        f'<div class="math-block" data-source-line="{math_start_line or index}">'
+                        f'\\[{html.escape(chr(10).join(math_lines).strip())}\\]</div>'
+                    )
+                    math_lines = []
+                    math_start_line = None
+                    in_math = False
+                else:
+                    math_lines.append(line)
+                continue
+
+            output.append(line)
+
+        if in_math:
+            output.append(
+                f'<div class="math-block" data-source-line="{math_start_line or 1}">'
+                f'\\[{html.escape(chr(10).join(math_lines).strip())}\\]</div>'
+            )
+
+        return "\n".join(output)
+
+    @staticmethod
+    def apply_emoji_shortcodes(value):
+        emoji_map = {
+            "smile": "😄", "grinning": "😀", "joy": "😂", "laughing": "😆",
+            "wink": "😉", "blush": "😊", "heart": "❤️", "broken_heart": "💔",
+            "thumbsup": "👍", "+1": "👍", "thumbsdown": "👎", "-1": "👎",
+            "clap": "👏", "pray": "🙏", "fire": "🔥", "star": "⭐",
+            "sparkles": "✨", "rocket": "🚀", "tada": "🎉", "warning": "⚠️",
+            "x": "❌", "white_check_mark": "✅", "check": "✅", "information_source": "ℹ️",
+            "bulb": "💡", "eyes": "👀", "thinking": "🤔", "cry": "😢",
+            "sob": "😭", "angry": "😠", "poop": "💩", "100": "💯",
+            "memo": "📝", "book": "📖", "computer": "💻", "gear": "⚙️",
+            "bug": "🐛", "lock": "🔒", "unlock": "🔓", "link": "🔗"
+        }
+        return re.sub(
+            r':([a-zA-Z0-9_+\-]+):',
+            lambda match: emoji_map.get(match.group(1), match.group(0)),
+            value
+        )
+
+    def collect_source_anchor_lines(self, text):
+        """Collect approximate source lines for rendered block elements."""
+        anchors = []
+        in_fence = False
+        fence_start = None
+        in_math = False
+        math_start = None
+
+        for index, line in enumerate(text.splitlines(), start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+
+            if stripped.startswith("```"):
+                if in_fence:
+                    in_fence = False
+                    fence_start = None
+                else:
+                    anchors.append(index)
+                    in_fence = True
+                    fence_start = index
+                continue
+            if in_fence:
+                continue
+
+            if stripped.startswith("$$"):
+                if in_math:
+                    in_math = False
+                    math_start = None
+                else:
+                    anchors.append(index)
+                    in_math = True
+                    math_start = index
+                continue
+            if in_math:
+                continue
+
+            if re.match(r'^\|?.+\|.+$', stripped):
+                if index == 1 or not re.match(r'^:?-{3,}:?(?:\s*\|\s*:?-{3,}:?)+\s*\|?$', stripped):
+                    anchors.append(index)
+                continue
+
+            anchors.append(index)
+
+        return anchors or [1]
+
+    def add_source_line_anchors(self, body_html, source_text):
+        """Attach source-line attributes to block elements for scroll sync."""
+        source_lines = iter(self.collect_source_anchor_lines(source_text))
+
+        def add_anchor(match):
+            tag = match.group(1)
+            attrs = match.group(2) or ""
+            if "data-source-line=" in attrs:
+                return match.group(0)
+            line = next(source_lines, None)
+            if line is None:
+                return match.group(0)
+            return f'<{tag}{attrs} data-source-line="{line}">'
+
+        return re.sub(
+            r'<(h[1-6]|p|pre|blockquote|li|table|hr|div)(\s[^>]*)?>',
+            add_anchor,
+            body_html
+        )
+
+    def wrap_markdown_preview_html(self, body_html):
+        """Wrap rendered body HTML in Jottr preview CSS and scripts."""
+        return f"""
+        <html>
+        <head>
+            <style>
+                body {{
+                    color: #202124;
+                    font-family: "DejaVu Sans", "Segoe UI", sans-serif;
+                    font-size: 14px;
+                    line-height: 1.55;
+                    margin: 18px;
+                }}
+                h1, h2, h3, h4, h5, h6 {{
+                    color: #111827;
+                    font-weight: 700;
+                    margin: 1.1em 0 0.45em;
+                }}
+                h1 {{ font-size: 30px; border-bottom: 1px solid #d8dee4; padding-bottom: 6px; }}
+                h2 {{ font-size: 24px; border-bottom: 1px solid #d8dee4; padding-bottom: 4px; }}
+                h3 {{ font-size: 20px; }}
+                h4 {{ font-size: 17px; }}
+                h5 {{ font-size: 15px; }}
+                h6 {{ font-size: 14px; color: #57606a; }}
+                p {{ margin: 0 0 0.8em; }}
+                pre {{
+                    background: #f6f8fa;
+                    border: 1px solid #d0d7de;
+                    border-radius: 6px;
+                    padding: 12px;
+                    white-space: pre-wrap;
+                    margin: 0.9em 0;
+                }}
+                code {{
+                    font-family: "DejaVu Sans Mono", "Consolas", monospace;
+                    background: #f6f8fa;
+                    border-radius: 4px;
+                    padding: 2px 4px;
+                }}
+                pre code {{ background: transparent; padding: 0; }}
+                blockquote {{
+                    border-left: 4px solid #d0d7de;
+                    color: #57606a;
+                    margin: 0.8em 0;
+                    padding-left: 12px;
+                }}
+                ul, ol {{ margin: 0.4em 0 0.8em 1.4em; }}
+                li {{ margin: 0.2em 0; }}
+                .task-list-item-checkbox {{
+                    margin-right: 0.45em;
+                    vertical-align: -0.1em;
+                }}
+                a {{ color: #0969da; }}
+                table {{
+                    border-collapse: collapse;
+                    margin: 1em 0;
+                    width: 100%;
+                    overflow: hidden;
+                }}
+                th, td {{
+                    border: 1px solid #d0d7de;
+                    padding: 6px 10px;
+                    vertical-align: top;
+                }}
+                th {{
+                    background: #f6f8fa;
+                    font-weight: 700;
+                }}
+                tr:nth-child(even) td {{
+                    background: #fbfbfc;
+                }}
+                img {{
+                    display: block;
+                    max-width: 100%;
+                    height: auto;
+                    margin: 0.8em 0;
+                }}
+                .math-inline {{
+                    white-space: nowrap;
+                }}
+                .math-block {{
+                    margin: 1em 0;
+                    overflow-x: auto;
+                }}
+                .admonition {{
+                    border-left: 4px solid #0969da;
+                    background: #f6f8fa;
+                    padding: 10px 14px;
+                    margin: 1em 0;
+                }}
+                .admonition-title {{
+                    font-weight: 700;
+                    margin-top: 0;
+                }}
+            </style>
+            <script>
+                window.MathJax = {{
+                    tex: {{
+                        inlineMath: [['\\\\(', '\\\\)']],
+                        displayMath: [['\\\\[', '\\\\]']],
+                        processEscapes: true
+                    }},
+                    svg: {{
+                        fontCache: 'global'
+                    }}
+                }};
+            </script>
+            <script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
+        </head>
+        <body>
+            {body_html}
+        </body>
+        </html>
+        """
+
+    @staticmethod
+    def apply_typographer_replacements(value):
+        """Apply common markdown typographer replacements."""
+        replacements = {
+            "(c)": "©",
+            "(C)": "©",
+            "(r)": "®",
+            "(R)": "®",
+            "(tm)": "™",
+            "(TM)": "™",
+            "+-": "±",
+        }
+        for source, replacement in replacements.items():
+            value = value.replace(source, replacement)
+        return value
 
     def handle_modification(self, modified):
         """Update tab title to show modification status"""
@@ -1621,6 +2810,8 @@ class EditorTab(QWidget):
         states = {
             'snippets_visible': self.snippet_widget.isVisible(),
             'browser_visible': self.browser_widget.isVisible(),
+            'markdown_preview_visible': self.markdown_preview_visible if hasattr(self, 'markdown_preview') else False,
+            'markdown_sizes': self.markdown_splitter.sizes() if hasattr(self, 'markdown_splitter') else [600, 600],
             'sizes': self.splitter.sizes()
         }
         self.settings_manager.save_setting('pane_states', states)
@@ -1831,6 +3022,11 @@ class EditorTab(QWidget):
 
     def eventFilter(self, obj, event):
         """Filter events for focus mode"""
+        if hasattr(self, 'markdown_preview') and obj == self.markdown_preview:
+            if event.type() in (QEvent.Wheel, QEvent.KeyRelease, QEvent.MouseButtonRelease):
+                self.preview_user_scroll_until = time.time() + 1.0
+                self.schedule_editor_scroll_sync()
+
         if obj == self.editor and event.type() == QEvent.KeyPress:
             # Handle Escape key
             if event.key() == Qt.Key_Escape and hasattr(self, 'focus_mode') and self.focus_mode:

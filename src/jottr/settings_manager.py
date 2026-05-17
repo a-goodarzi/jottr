@@ -16,6 +16,8 @@ class SettingsManager:
             "theme": "default",
             "ui_theme": "light",
             "spell_check": True,
+            "markdown_scroll_sync": True,
+            "editor_line_numbers": True,
             "search_sites": {
                 "AP News": "site:apnews.com",
                 "Reuters": "site:reuters.com",
@@ -26,6 +28,8 @@ class SettingsManager:
             "pane_states": {
                 "snippets_visible": False,
                 "browser_visible": False,
+                "markdown_preview_visible": False,
+                "markdown_sizes": [600, 600],
                 "sizes": [700, 300, 300]
             }
         }

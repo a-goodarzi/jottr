@@ -35,6 +35,18 @@ class SettingsDialog(QDialog):
         theme_layout.addWidget(theme_label)
         theme_layout.addWidget(self.theme_combo)
         appearance_layout.addLayout(theme_layout)
+
+        self.markdown_scroll_sync_check = QCheckBox("Sync markdown editor and preview scrolling")
+        self.markdown_scroll_sync_check.setChecked(
+            self.settings_manager.get_setting('markdown_scroll_sync', True)
+        )
+        appearance_layout.addWidget(self.markdown_scroll_sync_check)
+
+        self.editor_line_numbers_check = QCheckBox("Show editor line numbers")
+        self.editor_line_numbers_check.setChecked(
+            self.settings_manager.get_setting('editor_line_numbers', True)
+        )
+        appearance_layout.addWidget(self.editor_line_numbers_check)
         
         # Add appearance tab
         tabs.addTab(appearance_tab, "Appearance")
@@ -166,7 +178,9 @@ class SettingsDialog(QDialog):
             'homepage': self.homepage_edit.text(),
             'search_sites': self.get_search_sites(),
             'user_dictionary': self.get_user_dictionary(),
-            'ui_theme': self.theme_combo.currentText()
+            'ui_theme': self.theme_combo.currentText(),
+            'markdown_scroll_sync': self.markdown_scroll_sync_check.isChecked(),
+            'editor_line_numbers': self.editor_line_numbers_check.isChecked()
         }
 
     def get_search_sites(self):
