@@ -25,7 +25,7 @@ _APP = None
 
 def app():
     global _APP
-    _APP = QApplication.instance() or _APP or QApplication([])
+    _APP = QApplication.instance() or _APP or QApplication(["jottr-tests"])
     return _APP
 
 
