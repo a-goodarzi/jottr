@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
 from PyQt5.QtCore import Qt, QUrl, QTimer, QStringListModel, QRegExp, QEvent, QSize, QRect
 from PyQt5.QtGui import (QTextCharFormat, QSyntaxHighlighter, QIcon, QFont, QKeySequence, 
                         QPainter, QPen, QColor, QFontMetrics, QTextDocument, QTextCursor)
-from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEnginePage
+from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEnginePage, QWebEngineSettings
 from urllib.parse import quote
 from snippet_editor_dialog import SnippetEditorDialog
 from rss_reader import RSSReader
@@ -24,6 +24,7 @@ import html
 import re
 import base64
 import mimetypes
+import tempfile
 
 try:
     import markdown as markdown_lib
@@ -410,6 +411,10 @@ class CompletingTextEdit(QTextEdit):
         # Set focus back to editor
         self.editor.setFocus()
 
+class MarkdownPreviewPage(QWebEnginePage):
+    def javaScriptConsoleMessage(self, level, message, line_number, source_id):
+        print(f"Markdown preview JS: {message} ({source_id}:{line_number})")
+
 class EditorTab(QWidget):
     def __init__(self, snippet_manager, settings_manager):
         super().__init__()
@@ -427,6 +432,11 @@ class EditorTab(QWidget):
         self.pending_preview_source_line = None
         self.ignore_preview_scroll_until = 0
         self.preview_user_scroll_until = 0
+        self.markdown_preview_file = os.path.join(
+            tempfile.gettempdir(),
+            f'jottr_markdown_preview_{id(self)}.html'
+        )
+        self._mermaid_script_content = None
         
         # Add USE_ENCHANT as instance attribute
         self.USE_ENCHANT = USE_ENCHANT  # Use the module-level variable
@@ -508,8 +518,14 @@ class EditorTab(QWidget):
         self.markdown_splitter.addWidget(self.editor)
 
         self.markdown_preview = QWebEngineView()
+        self.markdown_preview.setPage(MarkdownPreviewPage(self.markdown_preview))
+        preview_settings = self.markdown_preview.settings()
+        preview_settings.setAttribute(QWebEngineSettings.JavascriptEnabled, True)
+        preview_settings.setAttribute(QWebEngineSettings.LocalContentCanAccessRemoteUrls, True)
+        preview_settings.setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, True)
         self.markdown_preview.setVisible(False)
         self.markdown_preview.installEventFilter(self)
+        self.markdown_preview.loadFinished.connect(self.render_markdown_preview_scripts)
         self.markdown_splitter.addWidget(self.markdown_preview)
         self.markdown_splitter.setSizes([600, 600])
         self.markdown_splitter.splitterMoved.connect(self.save_pane_states)
@@ -1286,9 +1302,99 @@ class EditorTab(QWidget):
         if not hasattr(self, 'markdown_preview') or not self.markdown_preview_visible:
             return
 
-        base_url = QUrl.fromLocalFile(os.path.dirname(self.current_file) + os.sep) if self.current_file else QUrl()
-        self.markdown_preview.setHtml(self.render_markdown_html(self.editor.toPlainText()), base_url)
+        if self.current_file:
+            content_base_url = QUrl.fromLocalFile(os.path.dirname(self.current_file) + os.sep).toString()
+        else:
+            content_base_url = QUrl.fromLocalFile(os.getcwd() + os.sep).toString()
+
+        self.write_markdown_preview_file(
+            self.render_markdown_html(self.editor.toPlainText(), content_base_url)
+        )
+        self.markdown_preview.load(QUrl.fromLocalFile(self.markdown_preview_file))
         QTimer.singleShot(100, self.sync_markdown_preview_scroll)
+        QTimer.singleShot(300, self.render_markdown_preview_scripts)
+
+    def write_markdown_preview_file(self, preview_html):
+        """Write the rendered preview to a normal local HTML file for WebEngine."""
+        with open(self.markdown_preview_file, 'w', encoding='utf-8') as preview_file:
+            preview_file.write(preview_html)
+
+    def render_markdown_preview_scripts(self, *args):
+        """Run preview scripts that need the WebEngine page to finish loading."""
+        if not hasattr(self, 'markdown_preview') or not self.markdown_preview_visible:
+            return
+
+        self.markdown_preview.page().runJavaScript("""
+            (async function () {
+                if (!window.mermaid) {
+                    return false;
+                }
+
+                try {
+                    mermaid.initialize({
+                        startOnLoad: false,
+                        securityLevel: 'loose',
+                        theme: 'default'
+                    });
+
+                    function renderDiagram(renderId, source, diagram) {
+                        return new Promise(function (resolve, reject) {
+                            try {
+                                if (mermaid.render.length >= 3) {
+                                    mermaid.render(renderId, source, function (svg, bindFunctions) {
+                                        resolve({
+                                            svg: svg,
+                                            bindFunctions: bindFunctions
+                                        });
+                                    }, diagram);
+                                    return;
+                                }
+
+                                Promise.resolve(mermaid.render(renderId, source)).then(function (result) {
+                                    if (typeof result === 'string') {
+                                        resolve({
+                                            svg: result,
+                                            bindFunctions: null
+                                        });
+                                    } else {
+                                        resolve(result);
+                                    }
+                                }).catch(reject);
+                            } catch (error) {
+                                reject(error);
+                            }
+                        });
+                    }
+
+                    var diagrams = Array.prototype.slice.call(document.querySelectorAll('.mermaid'));
+                    for (var index = 0; index < diagrams.length; index += 1) {
+                        var diagram = diagrams[index];
+                        if (diagram.dataset.rendered === 'true') {
+                            continue;
+                        }
+
+                        var source = diagram.textContent;
+                        var renderId = 'jottr-mermaid-' + Date.now() + '-' + index;
+                        try {
+                            var result = await renderDiagram(renderId, source, diagram);
+                            diagram.innerHTML = result.svg;
+                            diagram.dataset.rendered = 'true';
+                            diagram.classList.remove('mermaid-error');
+                            if (result.bindFunctions) {
+                                result.bindFunctions(diagram);
+                            }
+                        } catch (error) {
+                            diagram.classList.add('mermaid-error');
+                            diagram.textContent = 'Mermaid render error: ' + error.message + '\\n\\n' + source;
+                        }
+                    }
+                    return true;
+                } catch (error) {
+                    console.error('Mermaid render failed', error);
+                    return false;
+                }
+            })();
+        """)
 
     def get_editor_top_visible_line(self):
         """Return the 1-based source line nearest the top of the editor viewport."""
@@ -1405,10 +1511,10 @@ class EditorTab(QWidget):
 
         self.markdown_preview.page().runJavaScript(script, apply_editor_scroll)
 
-    def render_markdown_html(self, text):
+    def render_markdown_html(self, text, content_base_url=""):
         """Render a practical markdown subset with stable heading and code styling."""
         if MARKDOWN_LIB_AVAILABLE:
-            return self.render_markdown_html_with_library(text)
+            return self.render_markdown_html_with_library(text, content_base_url)
 
         body = []
         paragraph = []
@@ -1952,7 +2058,7 @@ class EditorTab(QWidget):
         cells.append(''.join(current).strip())
         return cells
 
-    def render_markdown_html_with_library(self, text):
+    def render_markdown_html_with_library(self, text, content_base_url=""):
         """Render markdown using Python-Markdown with local preview enhancements."""
         prepared_text = self.preprocess_markdown_extensions(text)
         extensions = [
@@ -1970,12 +2076,62 @@ class EditorTab(QWidget):
             extensions=extensions,
             output_format='html5'
         )
+        body_html = self.render_mermaid_blocks(body_html)
         body_html = self.add_source_line_anchors(body_html, text)
 
-        return self.wrap_markdown_preview_html(body_html)
+        return self.wrap_markdown_preview_html(body_html, content_base_url)
+
+    def render_mermaid_blocks(self, body_html):
+        """Convert mermaid fenced code blocks into Mermaid render targets."""
+        def replace_mermaid(match):
+            attributes = match.group(1) or ""
+            diagram_source = html.unescape(match.group(2)).strip()
+            if "language-mermaid" not in attributes and "mermaid" not in attributes:
+                return match.group(0)
+            return self.render_mermaid_block(diagram_source)
+
+        return re.sub(
+            r'<pre><code([^>]*)>(.*?)</code></pre>',
+            replace_mermaid,
+            body_html,
+            flags=re.DOTALL
+        )
+
+    def render_mermaid_block(self, diagram_source):
+        """Render a Mermaid block with the bundled official Mermaid runtime."""
+        escaped_source = html.escape(diagram_source)
+
+        return (
+            '<div class="mermaid-block">'
+            f'<div class="mermaid">{escaped_source}</div>'
+            '</div>'
+        )
+
+    def get_mermaid_script_content(self):
+        """Return the bundled Mermaid renderer source for the preview page."""
+        cached_script = getattr(self, '_mermaid_script_content', None)
+        if cached_script is not None:
+            return cached_script
+
+        mermaid_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            'vendor',
+            'mermaid.min.js'
+        )
+        try:
+            with open(mermaid_path, 'r', encoding='utf-8') as mermaid_file:
+                script_content = mermaid_file.read()
+        except OSError:
+            script_content = ""
+
+        # Keep the inline script from accidentally closing its own script tag.
+        script_content = script_content.replace("</script", "<\\/script")
+        self._mermaid_script_content = script_content
+        return script_content
 
     def preprocess_markdown_extensions(self, text):
         """Preprocess syntax that Python-Markdown does not handle by default."""
+        text, fenced_blocks = self.stash_fenced_code_blocks(text)
         text = self.preprocess_task_lists(text)
         text = re.sub(r'~~(.+?)~~', r'<del>\1</del>', text, flags=re.DOTALL)
         text = self.apply_typographer_replacements(text)
@@ -1986,6 +2142,50 @@ class EditorTab(QWidget):
             lambda match: f'<span class="math-inline">\\({html.escape(match.group(1).strip())}\\)</span>',
             text
         )
+        text = self.restore_fenced_code_blocks(text, fenced_blocks)
+        return text
+
+    @staticmethod
+    def stash_fenced_code_blocks(text):
+        """Temporarily remove fenced code blocks from markdown preprocessing."""
+        lines = text.splitlines(keepends=True)
+        processed_lines = []
+        fenced_blocks = []
+        index = 0
+
+        while index < len(lines):
+            line = lines[index]
+            match = re.match(r'^([ \t]*)(`{3,}|~{3,})', line)
+            if not match:
+                processed_lines.append(line)
+                index += 1
+                continue
+
+            fence_marker = match.group(2)
+            fence_char = fence_marker[0]
+            fence_length = len(fence_marker)
+            block_lines = [line]
+            index += 1
+
+            while index < len(lines):
+                block_lines.append(lines[index])
+                closing = re.match(r'^[ \t]*(%s{%d,})[ \t]*$' % (re.escape(fence_char), fence_length), lines[index])
+                index += 1
+                if closing:
+                    break
+
+            placeholder = f'\u0000JOTTR_FENCED_CODE_{len(fenced_blocks)}\u0000'
+            fenced_blocks.append(''.join(block_lines))
+            processed_lines.append(placeholder + '\n')
+
+        return ''.join(processed_lines), fenced_blocks
+
+    @staticmethod
+    def restore_fenced_code_blocks(text, fenced_blocks):
+        """Restore fenced code blocks after markdown preprocessing."""
+        for index, block in enumerate(fenced_blocks):
+            text = text.replace(f'\u0000JOTTR_FENCED_CODE_{index}\u0000\n', block)
+            text = text.replace(f'\u0000JOTTR_FENCED_CODE_{index}\u0000', block)
         return text
 
     def preprocess_task_lists(self, text):
@@ -2179,11 +2379,14 @@ class EditorTab(QWidget):
             body_html
         )
 
-    def wrap_markdown_preview_html(self, body_html):
+    def wrap_markdown_preview_html(self, body_html, content_base_url=""):
         """Wrap rendered body HTML in Jottr preview CSS and scripts."""
+        mermaid_script_content = self.get_mermaid_script_content()
+        base_tag = f'<base href="{html.escape(content_base_url, quote=True)}">' if content_base_url else ''
         return f"""
         <html>
         <head>
+            {base_tag}
             <style>
                 body {{
                     color: #202124;
@@ -2273,6 +2476,31 @@ class EditorTab(QWidget):
                     font-weight: 700;
                     margin-top: 0;
                 }}
+                .mermaid {{
+                    background: #ffffff;
+                    border: 1px solid #d0d7de;
+                    border-radius: 6px;
+                    margin: 1em 0;
+                    padding: 12px;
+                    overflow-x: auto;
+                    text-align: center;
+                }}
+                .mermaid-svg {{
+                    display: block;
+                    height: auto;
+                    max-width: 100%;
+                    min-width: 220px;
+                }}
+                .mermaid svg {{
+                    display: inline-block;
+                    max-width: 100%;
+                }}
+                .mermaid-error {{
+                    color: #b42318;
+                    font-family: "DejaVu Sans Mono", "Consolas", monospace;
+                    text-align: left;
+                    white-space: pre-wrap;
+                }}
             </style>
             <script>
                 window.MathJax = {{
@@ -2287,6 +2515,90 @@ class EditorTab(QWidget):
                 }};
             </script>
             <script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
+            <script>
+                {mermaid_script_content}
+            </script>
+            <script>
+                async function renderMermaidDiagrams() {{
+                    if (!window.mermaid) {{
+                        document.querySelectorAll('.mermaid').forEach(function (diagram) {{
+                            diagram.classList.add('mermaid-error');
+                            diagram.textContent = 'Mermaid runtime could not be loaded.\\n\\n' + diagram.textContent;
+                        }});
+                        return;
+                    }}
+
+                    try {{
+                        mermaid.initialize({{
+                            startOnLoad: false,
+                            securityLevel: 'loose',
+                            theme: 'default'
+                        }});
+
+                        function renderDiagram(renderId, source, diagram) {{
+                            return new Promise(function (resolve, reject) {{
+                                try {{
+                                    if (mermaid.render.length >= 3) {{
+                                        mermaid.render(renderId, source, function (svg, bindFunctions) {{
+                                            resolve({{
+                                                svg: svg,
+                                                bindFunctions: bindFunctions
+                                            }});
+                                        }}, diagram);
+                                        return;
+                                    }}
+
+                                    Promise.resolve(mermaid.render(renderId, source)).then(function (result) {{
+                                        if (typeof result === 'string') {{
+                                            resolve({{
+                                                svg: result,
+                                                bindFunctions: null
+                                            }});
+                                        }} else {{
+                                            resolve(result);
+                                        }}
+                                    }}).catch(reject);
+                                }} catch (error) {{
+                                    reject(error);
+                                }}
+                            }});
+                        }}
+
+                        var diagrams = Array.prototype.slice.call(document.querySelectorAll('.mermaid'));
+                        for (var index = 0; index < diagrams.length; index += 1) {{
+                            var diagram = diagrams[index];
+                            if (diagram.dataset.rendered === 'true') {{
+                                continue;
+                            }}
+
+                            var source = diagram.textContent;
+                            var renderId = 'jottr-mermaid-' + Date.now() + '-' + index;
+                            try {{
+                                var result = await renderDiagram(renderId, source, diagram);
+                                diagram.innerHTML = result.svg;
+                                diagram.dataset.rendered = 'true';
+                                diagram.classList.remove('mermaid-error');
+                                if (result.bindFunctions) {{
+                                    result.bindFunctions(diagram);
+                                }}
+                            }} catch (error) {{
+                                diagram.classList.add('mermaid-error');
+                                diagram.textContent = 'Mermaid render error: ' + error.message + '\\n\\n' + source;
+                            }}
+                        }}
+                    }} catch (error) {{
+                        console.error('Mermaid render failed', error);
+                    }}
+                }}
+
+                if (document.readyState === 'loading') {{
+                    document.addEventListener('DOMContentLoaded', renderMermaidDiagrams);
+                }} else {{
+                    renderMermaidDiagrams();
+                }}
+
+                window.addEventListener('load', renderMermaidDiagrams);
+            </script>
         </head>
         <body>
             {body_html}
