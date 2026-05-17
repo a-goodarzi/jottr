@@ -17,6 +17,7 @@ from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QApplication, QTextEdit, QWidget
 
 from editor_tab import EditorTab
+import editor_tab as editor_tab_module
 import main as main_module
 from main import APP_NAME, TextEditorApp
 from settings_manager import SettingsManager
@@ -28,8 +29,43 @@ _APP = None
 
 def app():
     global _APP
-    _APP = QApplication.instance() or _APP or QApplication([])
+    _APP = QApplication.instance() or _APP or QApplication(["jottr-tests"])
     return _APP
+
+
+class _Signal:
+    def connect(self, callback):
+        self.callback = callback
+
+
+class _FakeWebEngineSettings:
+    def setAttribute(self, *_args):
+        pass
+
+
+class _FakeWebEngineView(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.loadFinished = _Signal()
+        self.html = ""
+        self.base_url = None
+
+    def setPage(self, page):
+        self._page = page
+
+    def settings(self):
+        return _FakeWebEngineSettings()
+
+    def setHtml(self, html, base_url=None):
+        self.html = html
+        self.base_url = base_url
+
+    def page(self):
+        return self
+
+    def runJavaScript(self, _script, callback=None):
+        if callback:
+            callback(None)
 
 
 class EditorAndMainTests(unittest.TestCase):
@@ -44,6 +80,12 @@ class EditorAndMainTests(unittest.TestCase):
         self.snippets = SnippetManager(self.settings)
 
     def make_editor(self):
+        web_view_patch = patch.object(editor_tab_module, "QWebEngineView", _FakeWebEngineView)
+        preview_page_patch = patch.object(editor_tab_module, "MarkdownPreviewPage", lambda parent=None: object())
+        web_view_patch.start()
+        preview_page_patch.start()
+        self.addCleanup(web_view_patch.stop)
+        self.addCleanup(preview_page_patch.stop)
         editor = EditorTab(self.snippets, self.settings)
         self.addCleanup(editor.deleteLater)
         self.addCleanup(editor.backup_timer.stop)

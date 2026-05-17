@@ -13,7 +13,7 @@ from PyQt6.QtCore import Qt, QUrl, QTimer, QStringListModel, QEvent, QSize, QRec
 from PyQt6.QtGui import (QAction, QShortcut, QTextCharFormat, QSyntaxHighlighter, QIcon, QFont, QKeySequence,
                         QPainter, QPen, QColor, QFontMetrics, QTextDocument, QTextCursor)
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWebEngineCore import QWebEnginePage
+from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 from urllib.parse import quote
 from snippet_editor_dialog import SnippetEditorDialog
 from rss_reader import RSSReader
@@ -518,9 +518,9 @@ class EditorTab(QWidget):
         self.markdown_preview = QWebEngineView()
         self.markdown_preview.setPage(MarkdownPreviewPage(self.markdown_preview))
         preview_settings = self.markdown_preview.settings()
-        preview_settings.setAttribute(QWebEngineSettings.JavascriptEnabled, True)
-        preview_settings.setAttribute(QWebEngineSettings.LocalContentCanAccessRemoteUrls, True)
-        preview_settings.setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, True)
+        preview_settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
+        preview_settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
+        preview_settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
         self.markdown_preview.setVisible(False)
         self.markdown_preview.installEventFilter(self)
         self.markdown_preview.loadFinished.connect(self.render_markdown_preview_scripts)
