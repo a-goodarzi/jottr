@@ -1,7 +1,7 @@
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget, 
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget, 
                             QTextBrowser, QPushButton, QInputDialog, QMessageBox,
                             QComboBox, QListWidgetItem, QDialog)
-from PyQt5.QtCore import Qt, QUrl
+from PyQt6.QtCore import Qt, QUrl
 import feedparser
 import json
 import os
@@ -132,7 +132,7 @@ class RSSReader(QWidget):
                 for entry in feed.entries:
                     item_text = entry.title if hasattr(entry, 'title') else 'No Title'
                     list_item = QListWidgetItem(item_text)
-                    list_item.setData(Qt.UserRole, entry)
+                    list_item.setData(Qt.ItemDataRole.UserRole, entry)
                     self.entries_list.addItem(list_item)
             else:
                 print(f"Feed {feed_title} has no entries. Feed status: {feed.get('status', 'unknown')}")
@@ -182,8 +182,8 @@ class RSSReader(QWidget):
         if current_feed:
             reply = QMessageBox.question(self, 'Remove Feed', 
                                        f'Remove feed "{current_feed}"?',
-                                       QMessageBox.Yes | QMessageBox.No)
-            if reply == QMessageBox.Yes:
+                                       QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.Yes:
                 del self.feeds[current_feed]
                 self.save_feeds()
                 self.update_feed_selector()
@@ -191,7 +191,7 @@ class RSSReader(QWidget):
                 
     def show_entry(self, current, previous):
         if current:
-            entry = current.data(Qt.UserRole)
+            entry = current.data(Qt.ItemDataRole.UserRole)
             content = f"<h2>{entry.title}</h2>"
             if hasattr(entry, 'published'):
                 content += f"<p><i>Published: {entry.published}</i></p>"
@@ -203,7 +203,7 @@ class RSSReader(QWidget):
 
     def manage_feeds(self):
         dialog = FeedManagerDialog(self.feeds, self)
-        if dialog.exec_() == QDialog.Accepted:
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             self.feeds = dialog.get_feeds()
             self.save_feeds()
             self.update_feed_selector()

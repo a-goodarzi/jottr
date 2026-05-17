@@ -1,6 +1,5 @@
-from PyQt5.QtGui import QColor, QPalette
-from PyQt5.QtWidgets import QStyleFactory
-
+from PyQt6.QtGui import QColor, QPalette
+from PyQt6.QtWidgets import QStyleFactory
 class ThemeManager:
     @staticmethod
     def get_themes():

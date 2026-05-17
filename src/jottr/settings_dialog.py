@@ -1,7 +1,7 @@
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
+from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
                             QLineEdit, QPushButton, QListWidget, QTabWidget,
                             QWidget, QCheckBox, QMessageBox, QInputDialog, QComboBox)
-from PyQt5.QtCore import Qt
+from PyQt6.QtCore import Qt
 import json
 import os
 
@@ -140,7 +140,7 @@ class SettingsDialog(QDialog):
     def add_search_site(self):
         """Add new search site"""
         dialog = SearchSiteDialog(self)
-        if dialog.exec_():
+        if dialog.exec():
             name, site = dialog.get_data()
             self.search_list.addItem(f"{name}: {site}")
 
@@ -150,7 +150,7 @@ class SettingsDialog(QDialog):
         if current:
             name, site = current.text().split(': ', 1)
             dialog = SearchSiteDialog(self, name, site)
-            if dialog.exec_():
+            if dialog.exec():
                 new_name, new_site = dialog.get_data()
                 current.setText(f"{new_name}: {new_site}")
 

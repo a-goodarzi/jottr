@@ -11,12 +11,12 @@ BuildArch:      noarch
 BuildRequires:  python3-devel
 
 Requires:       python3
-Requires:       python3-qt5
-Requires:       python3-qt5-webengine
+Requires:       python3-qt6
+Requires:       python3-qt6-webengine
 Requires:       python3-feedparser
 Requires:       python3-enchant
-Requires:       python3-pyqt5-sip
-Requires:       qt5-qtsvg
+Requires:       python3-pyqt6-sip
+Requires:       qt6-qtsvg
 Requires:       python3-pyxdg
 
 %description
@@ -80,4 +80,3 @@ install -p -m 644 icons/jottr.png %{buildroot}%{_datadir}/icons/hicolor/256x256/
 %changelog
 * Sat Mar 01 2025 mFat <newmfat@gmail.com> - 1.4.3-1
 - Bug fixes and improvements
-
