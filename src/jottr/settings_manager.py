@@ -1,8 +1,8 @@
 import json
 import os
-from PyQt5.QtGui import QFont
+from PyQt6.QtGui import QFont
 import time
-from PyQt5.QtWidgets import QApplication, QStyleFactory
+from PyQt6.QtWidgets import QApplication, QStyleFactory
 import sys
 
 class SettingsManager:

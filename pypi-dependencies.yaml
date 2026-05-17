@@ -1,4 +1,4 @@
-# Generated with flatpak-pip-generator --runtime=org.kde.Sdk//5.15 --yaml --requirements-file=runtime-requirements.txt --output=pypi-dependencies
+# Generated with flatpak-pip-generator --runtime=org.kde.Sdk//6.10 --yaml --requirements-file=runtime-requirements.txt --output=pypi-dependencies
 build-commands: []
 buildsystem: simple
 modules:

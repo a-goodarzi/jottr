@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton,
+from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton,
                             QTableWidget, QTableWidgetItem, QInputDialog,
                             QMessageBox, QHeaderView)
 import requests
@@ -19,8 +19,8 @@ class FeedManagerDialog(QDialog):
         # Create table
         self.table = QTableWidget(0, 2)
         self.table.setHorizontalHeaderLabels(["Feed Title", "URL"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.table)
         
         # Buttons
@@ -111,8 +111,8 @@ class FeedManagerDialog(QDialog):
         title = self.table.item(current_row, 0).text()
         reply = QMessageBox.question(self, 'Remove Feed', 
                                    f'Remove feed "{title}"?',
-                                   QMessageBox.Yes | QMessageBox.No)
-        if reply == QMessageBox.Yes:
+                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
             del self.feeds[title]
             self.refresh_table()
             

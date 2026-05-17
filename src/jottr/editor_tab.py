@@ -6,13 +6,14 @@ vendor_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'vendor')
 if os.path.exists(vendor_dir):
     sys.path.insert(0, vendor_dir)
 
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
                             QTextEdit, QListWidget, QInputDialog, QMenu, QFileDialog, QDialog,
-                            QToolBar, QAction, QCompleter, QListWidgetItem, QLineEdit, QPushButton, QMessageBox, QLabel, QShortcut, QToolTip)
-from PyQt5.QtCore import Qt, QUrl, QTimer, QStringListModel, QRegExp, QEvent, QSize, QRect
-from PyQt5.QtGui import (QTextCharFormat, QSyntaxHighlighter, QIcon, QFont, QKeySequence, 
+                            QToolBar, QCompleter, QListWidgetItem, QLineEdit, QPushButton, QMessageBox, QLabel, QToolTip)
+from PyQt6.QtCore import Qt, QUrl, QTimer, QStringListModel, QEvent, QSize, QRect
+from PyQt6.QtGui import (QAction, QShortcut, QTextCharFormat, QSyntaxHighlighter, QIcon, QFont, QKeySequence,
                         QPainter, QPen, QColor, QFontMetrics, QTextDocument, QTextCursor)
-from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEnginePage, QWebEngineSettings
+from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtWebEngineCore import QWebEnginePage
 from urllib.parse import quote
 from snippet_editor_dialog import SnippetEditorDialog
 from rss_reader import RSSReader
@@ -132,14 +133,13 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
         user_dict = self.settings_manager.get_setting('user_dictionary', [])
         
         format = QTextCharFormat()
-        format.setUnderlineColor(Qt.red)
-        format.setUnderlineStyle(QTextCharFormat.SpellCheckUnderline)
+        format.setUnderlineColor(Qt.GlobalColor.red)
+        format.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SpellCheckUnderline)
 
         # For each word in the text
-        expression = QRegExp("\\b\\w+\\b")
-        index = expression.indexIn(text)
-        while index >= 0:
-            word = expression.cap()
+        for match in re.finditer(r'\b\w+\b', text):
+            index = match.start()
+            word = match.group(0)
             length = len(word)
             
             # Only spell check Latin words
@@ -151,8 +151,6 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
                             self.setFormat(index, length, format)
                     except UnicodeEncodeError:
                         pass  # Skip words that can't be encoded
-            
-            index = expression.indexIn(text, index + length)
 
     def is_latin_word(self, word):
         """Check if word contains only Latin characters"""
@@ -167,7 +165,7 @@ class CustomTextEdit(QTextEdit):
         super().__init__(parent)
         self.parent_tab = parent
         self.completer = None
-        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         if parent:
             self.customContextMenuRequested.connect(parent.show_context_menu)
 
@@ -206,7 +204,7 @@ class CustomTextEdit(QTextEdit):
     def keyPressEvent(self, event):
         if self.completer and self.completer.popup().isVisible():
             # Handle keys for autocompletion
-            if event.key() in (Qt.Key_Enter, Qt.Key_Return, Qt.Key_Tab):
+            if event.key() in (Qt.Key.Key_Enter, Qt.Key.Key_Return, Qt.Key.Key_Tab):
                 # Get the current completion
                 current = self.completer.currentCompletion()
                 if current:
@@ -215,7 +213,7 @@ class CustomTextEdit(QTextEdit):
                 self.completer.popup().hide()
                 event.accept()
                 return
-            elif event.key() == Qt.Key_Escape:
+            elif event.key() == Qt.Key.Key_Escape:
                 self.completer.popup().hide()
                 event.accept()
                 return
@@ -303,7 +301,7 @@ class CompletingTextEdit(QTextEdit):
                     top,
                     self.line_number_area.width() - 4,
                     self.fontMetrics().height(),
-                    Qt.AlignRight,
+                    Qt.AlignmentFlag.AlignRight,
                     number
                 )
 
@@ -318,21 +316,21 @@ class CompletingTextEdit(QTextEdit):
             self.parent_tab.suggestion_tooltip and 
             self.parent_tab.current_suggestions):
             
-            if event.key() == Qt.Key_Down:
+            if event.key() == Qt.Key.Key_Down:
                 self.parent_tab.select_next_suggestion()
                 event.accept()
                 return
-            elif event.key() == Qt.Key_Up:
+            elif event.key() == Qt.Key.Key_Up:
                 self.parent_tab.select_previous_suggestion()
                 event.accept()
                 return
-            elif event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            elif event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 if self.parent_tab.selected_suggestion_index >= 0:
                     suggestion_type, text = self.parent_tab.current_suggestions[self.parent_tab.selected_suggestion_index]
                     self.parent_tab.apply_suggestion(text)
                 event.accept()
                 return
-            elif event.key() == Qt.Key_Tab:
+            elif event.key() == Qt.Key.Key_Tab:
                 # If there's only one suggestion, apply it
                 if len(self.parent_tab.current_suggestions) == 1:
                     suggestion_type, text = self.parent_tab.current_suggestions[0]
@@ -342,7 +340,7 @@ class CompletingTextEdit(QTextEdit):
                     self.parent_tab.select_next_suggestion()
                 event.accept()
                 return
-            elif event.key() == Qt.Key_Escape:
+            elif event.key() == Qt.Key.Key_Escape:
                 self.parent_tab.hide_suggestions()
                 event.accept()
                 return
@@ -498,11 +496,11 @@ class EditorTab(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         
         # Create splitter for editor and side panes
-        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
         
         # Create text editor with default font
         self.editor = CompletingTextEdit(self)  # Pass self as parent
-        self.editor.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.editor.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.editor.customContextMenuRequested.connect(self.show_context_menu)
         self.editor.set_line_numbers_visible(
             self.settings_manager.get_setting('editor_line_numbers', True)
@@ -514,7 +512,7 @@ class EditorTab(QWidget):
         editor_pane_layout.setContentsMargins(0, 0, 0, 0)
         editor_pane_layout.setSpacing(0)
 
-        self.markdown_splitter = QSplitter(Qt.Horizontal)
+        self.markdown_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.markdown_splitter.addWidget(self.editor)
 
         self.markdown_preview = QWebEngineView()
@@ -604,7 +602,7 @@ class EditorTab(QWidget):
             }
         """)
         self.snippet_list.itemDoubleClicked.connect(self.insert_snippet)
-        self.snippet_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.snippet_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.snippet_list.customContextMenuRequested.connect(self.show_snippet_context_menu)
         self.update_snippet_list()  # Populate the list
         snippet_layout.addWidget(self.snippet_list)
@@ -987,7 +985,7 @@ class EditorTab(QWidget):
         menu.addSeparator()            
         
         # Show menu
-        menu.exec_(self.editor.mapToGlobal(pos))
+        menu.exec(self.editor.mapToGlobal(pos))
 
     def search_in_browser(self, url):
         """Search the given URL in the browser pane"""
@@ -1133,7 +1131,7 @@ class EditorTab(QWidget):
         content = self.snippet_manager.get_snippet(old_title)
         
         dialog = SnippetEditorDialog(old_title, content, self)
-        if dialog.exec_() == QDialog.Accepted:
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             data = dialog.get_data()
             # Delete old snippet if title changed
             if data['title'] != old_title:
@@ -1154,7 +1152,7 @@ class EditorTab(QWidget):
         if current_item:
             menu.addAction("Edit Snippet", self.edit_current_snippet)
             menu.addAction("Delete Snippet", self.delete_current_snippet)
-            menu.exec_(self.snippet_list.mapToGlobal(position))
+            menu.exec(self.snippet_list.mapToGlobal(position))
 
     def update_completer_model(self):
         """Update completer with current snippets"""
@@ -1237,7 +1235,7 @@ class EditorTab(QWidget):
     def update_font(self, font):
         """Update editor font"""
         self.current_font = QFont(font)  # Store a copy of the font
-        self.current_font.setWeight(QFont.Normal)  # Force Regular weight
+        self.current_font.setWeight(QFont.Weight.Normal)  # Force Regular weight
         
         # Update font for the editor
         self.editor.setFont(self.current_font)
@@ -2702,22 +2700,22 @@ class EditorTab(QWidget):
         # Copy
         copy_action = QAction(self.web_view)
         copy_action.setShortcut(QKeySequence("Ctrl+C"))
-        copy_action.setShortcutContext(Qt.WidgetShortcut)
-        copy_action.triggered.connect(lambda: self.web_view.page().triggerAction(QWebEnginePage.Copy))
+        copy_action.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
+        copy_action.triggered.connect(lambda: self.web_view.page().triggerAction(QWebEnginePage.WebAction.Copy))
         self.web_view.addAction(copy_action)
         
         # Cut
         cut_action = QAction(self.web_view)
         cut_action.setShortcut(QKeySequence("Ctrl+X"))
-        cut_action.setShortcutContext(Qt.WidgetShortcut)
-        cut_action.triggered.connect(lambda: self.web_view.page().triggerAction(QWebEnginePage.Cut))
+        cut_action.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
+        cut_action.triggered.connect(lambda: self.web_view.page().triggerAction(QWebEnginePage.WebAction.Cut))
         self.web_view.addAction(cut_action)
         
         # Paste
         paste_action = QAction(self.web_view)
         paste_action.setShortcut(QKeySequence("Ctrl+V"))
-        paste_action.setShortcutContext(Qt.WidgetShortcut)
-        paste_action.triggered.connect(lambda: self.web_view.page().triggerAction(QWebEnginePage.Paste))
+        paste_action.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
+        paste_action.triggered.connect(lambda: self.web_view.page().triggerAction(QWebEnginePage.WebAction.Paste))
         self.web_view.addAction(paste_action)
         
     def update_url(self, url):
@@ -2856,7 +2854,7 @@ class EditorTab(QWidget):
         self.exit_focus_btn.show()
         
         # Set fullscreen
-        window.setWindowState(window.windowState() | Qt.WindowFullScreen)
+        window.setWindowState(window.windowState() | Qt.WindowState.WindowFullScreen)
 
     def disable_focus_mode(self):
         """Disable focus mode"""
@@ -2865,9 +2863,9 @@ class EditorTab(QWidget):
         window = self.window()
         
         # Remove fullscreen flag while preserving other states
-        new_state = window.windowState() & ~Qt.WindowFullScreen
-        if self.pre_focus_state & Qt.WindowMaximized:
-            new_state |= Qt.WindowMaximized
+        new_state = window.windowState() & ~Qt.WindowState.WindowFullScreen
+        if self.pre_focus_state & Qt.WindowState.WindowMaximized:
+            new_state |= Qt.WindowState.WindowMaximized
             
         # Apply the state change
         window.setWindowState(new_state)
@@ -2974,12 +2972,12 @@ class EditorTab(QWidget):
         document = self.editor.document()
         
         # Create find flags
-        flags = QTextDocument.FindFlags()
+        flags = QTextDocument.FindFlag(0)
         if direction == 'up':
-            flags |= QTextDocument.FindBackward
+            flags |= QTextDocument.FindFlag.FindBackward
             
         # Remove case sensitivity flag to make search case-insensitive
-        # flags |= QTextDocument.FindCaseSensitively  # Commented out to make case-insensitive
+        # flags |= QTextDocument.FindFlag.FindCaseSensitively  # Commented out to make case-insensitive
             
         # Find next occurrence
         if not self.editor.find(text, flags):
@@ -3023,12 +3021,12 @@ class EditorTab(QWidget):
         cursor.beginEditBlock()
         
         # Move to start
-        cursor.movePosition(QTextCursor.Start)
+        cursor.movePosition(QTextCursor.MoveOperation.Start)
         self.editor.setTextCursor(cursor)
         
         # Create find flags for case-insensitive search
-        flags = QTextDocument.FindFlags()
-        # flags |= QTextDocument.FindCaseSensitively  # Commented out to make case-insensitive
+        flags = QTextDocument.FindFlag(0)
+        # flags |= QTextDocument.FindFlag.FindCaseSensitively  # Commented out to make case-insensitive
         
         # Replace all occurrences
         count = 0
@@ -3043,7 +3041,7 @@ class EditorTab(QWidget):
         QMessageBox.information(self, "Replace All", f"Replaced {count} occurrence{'s' if count != 1 else ''}")
         
         # Move cursor back to start
-        cursor.movePosition(QTextCursor.Start)
+        cursor.movePosition(QTextCursor.MoveOperation.Start)
         self.editor.setTextCursor(cursor)
 
     def clear_highlights(self):
@@ -3078,7 +3076,7 @@ class EditorTab(QWidget):
         select_all_action.setShortcut("Ctrl+A")
         
         # Show menu at cursor position
-        menu.exec_(self.editor.mapToGlobal(position))
+        menu.exec(self.editor.mapToGlobal(position))
 
     def handle_text_changed(self):
         """Handle text changes for autocompletion"""
@@ -3158,7 +3156,7 @@ class EditorTab(QWidget):
         self.selected_suggestion_index = -1
         
         # Create tooltip widget
-        self.suggestion_tooltip = QWidget(self.editor, Qt.ToolTip)
+        self.suggestion_tooltip = QWidget(self.editor, Qt.WindowType.ToolTip)
         layout = QVBoxLayout(self.suggestion_tooltip)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(2)
@@ -3203,7 +3201,7 @@ class EditorTab(QWidget):
             
             # Make container clickable
             container.mousePressEvent = lambda _, t=text: self.apply_suggestion(t)
-            container.setCursor(Qt.PointingHandCursor)
+            container.setCursor(Qt.CursorShape.PointingHandCursor)
             
             layout.addWidget(container)
         
@@ -3335,20 +3333,20 @@ class EditorTab(QWidget):
     def eventFilter(self, obj, event):
         """Filter events for focus mode"""
         if hasattr(self, 'markdown_preview') and obj == self.markdown_preview:
-            if event.type() in (QEvent.Wheel, QEvent.KeyRelease, QEvent.MouseButtonRelease):
+            if event.type() in (QEvent.Type.Wheel, QEvent.Type.KeyRelease, QEvent.Type.MouseButtonRelease):
                 self.preview_user_scroll_until = time.time() + 1.0
                 self.schedule_editor_scroll_sync()
 
-        if obj == self.editor and event.type() == QEvent.KeyPress:
+        if obj == self.editor and event.type() == QEvent.Type.KeyPress:
             # Handle Escape key
-            if event.key() == Qt.Key_Escape and hasattr(self, 'focus_mode') and self.focus_mode:
+            if event.key() == Qt.Key.Key_Escape and hasattr(self, 'focus_mode') and self.focus_mode:
                 self.disable_focus_mode()
                 event.accept()
                 return True
             # Handle Ctrl+Shift+D (or Cmd+Shift+D on Mac)
-            elif (event.key() == Qt.Key_D and 
-                  event.modifiers() & Qt.ShiftModifier and 
-                  event.modifiers() & (Qt.ControlModifier if sys.platform != 'darwin' else Qt.MetaModifier)):
+            elif (event.key() == Qt.Key.Key_D and 
+                  event.modifiers() & Qt.KeyboardModifier.ShiftModifier and 
+                  event.modifiers() & (Qt.KeyboardModifier.ControlModifier if sys.platform != 'darwin' else Qt.KeyboardModifier.MetaModifier)):
                 if self.focus_mode:
                     self.disable_focus_mode()
                 else:
@@ -3360,8 +3358,8 @@ class EditorTab(QWidget):
     def update_nav_buttons(self):
         """Update navigation button states"""
         if self.web_view:
-            self.back_btn.setEnabled(self.web_view.page().action(QWebEnginePage.Back).isEnabled())
-            self.forward_btn.setEnabled(self.web_view.page().action(QWebEnginePage.Forward).isEnabled())
+            self.back_btn.setEnabled(self.web_view.page().action(QWebEnginePage.WebAction.Back).isEnabled())
+            self.forward_btn.setEnabled(self.web_view.page().action(QWebEnginePage.WebAction.Forward).isEnabled())
 
     def handle_navigation(self, navigation_type, url):
         """Handle navigation requests"""
