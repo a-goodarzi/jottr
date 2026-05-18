@@ -13,10 +13,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = PROJECT_ROOT / "src" / "jottr"
 sys.path.insert(0, str(SRC_DIR))
 
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QTextDocument
 from PyQt6.QtWidgets import QApplication, QTextEdit, QWidget
 
-from editor_tab import EditorTab
+from editor_tab import EditorTab, SpellCheckHighlighter
 import editor_tab as editor_tab_module
 import main as main_module
 from main import APP_NAME, TextEditorApp
@@ -90,6 +90,7 @@ class EditorAndMainTests(unittest.TestCase):
         self.addCleanup(editor.deleteLater)
         self.addCleanup(editor.backup_timer.stop)
         self.addCleanup(editor.preview_scroll_timer.stop)
+        self.addCleanup(editor.markdown_render_timer.stop)
         return editor
 
     def test_markdown_helpers_cover_tables_tasks_math_and_shortcodes(self):
@@ -106,6 +107,25 @@ class EditorAndMainTests(unittest.TestCase):
         self.assertIn("<table", html)
         self.assertIn("math-block", html)
 
+    def test_markdown_preview_anchors_fenced_code_lines(self):
+        editor = self.make_editor()
+
+        html = editor.render_markdown_html("```css\nbody { color: red; }\na { color: blue; }\n```")
+
+        self.assertIn("source-code-line", html)
+        self.assertIn('data-source-line="2"', html)
+        self.assertIn('data-source-line="3"', html)
+
+    def test_markdown_preview_uses_editor_font(self):
+        editor = self.make_editor()
+        font = QFont("Liberation Serif", 16)
+        editor.update_font(font)
+
+        html = editor.render_markdown_html("# Title")
+
+        self.assertIn('font-family: "Liberation Serif"', html)
+        self.assertIn("font-size: 16pt", html)
+
     def test_editor_file_and_line_number_state(self):
         editor = self.make_editor()
 
@@ -117,6 +137,44 @@ class EditorAndMainTests(unittest.TestCase):
         self.assertFalse(editor.editor.line_numbers_visible)
         editor.set_line_numbers_visible(True)
         self.assertTrue(editor.editor.line_numbers_visible)
+
+    def test_editor_scroll_ratio_tracks_scrollbar_progress(self):
+        editor = self.make_editor()
+        scroll_bar = editor.editor.verticalScrollBar()
+        scroll_bar.setRange(0, 100)
+        scroll_bar.setValue(45)
+        self.assertAlmostEqual(
+            editor.get_editor_scroll_ratio(),
+            0.45,
+            places=2
+        )
+
+    def test_markdown_highlighter_uses_theme_syntax_colors(self):
+        self.settings.save_theme("Dracula")
+        document = QTextDocument()
+        highlighter = SpellCheckHighlighter(document, self.settings)
+        highlighter.spell_check_enabled = False
+
+        document.setPlainText("# Title\n\n`code`\n\n[link](https://example.test)")
+        highlighter.rehighlight()
+
+        heading_colors = {
+            item.format.foreground().color().name()
+            for item in document.findBlockByNumber(0).layout().formats()
+        }
+        code_colors = {
+            item.format.foreground().color().name()
+            for item in document.findBlockByNumber(2).layout().formats()
+        }
+        link_colors = {
+            item.format.foreground().color().name()
+            for item in document.findBlockByNumber(4).layout().formats()
+        }
+
+        self.assertIn("#ff79c6", heading_colors)
+        self.assertIn("#bd93f9", code_colors)
+        self.assertIn("#50fa7b", link_colors)
+        self.assertIn("#f1fa8c", link_colors)
 
     def test_editor_snippet_insert_find_replace_and_save(self):
         editor = self.make_editor()
@@ -195,6 +253,15 @@ class EditorAndMainTests(unittest.TestCase):
             self.assertTrue(first_tab.markdown_preview_visible)
             window.apply_editor_line_numbers(False)
             self.assertFalse(first_tab.editor.line_numbers_visible)
+            toolbar_tooltips = {
+                action.text(): action.toolTip()
+                for action in window.toolbar.actions()
+                if not action.isSeparator() and action.text()
+            }
+            self.assertEqual(toolbar_tooltips["Font"], "Choose Editor Font")
+            self.assertEqual(toolbar_tooltips["Theme"], "Choose Editor Theme")
+            self.assertEqual(toolbar_tooltips["Menu"], "More Actions")
+            self.assertTrue(all(toolbar_tooltips.values()))
 
     def test_main_window_opens_file_in_new_tab(self):
         class FakeEditorTab(QWidget):

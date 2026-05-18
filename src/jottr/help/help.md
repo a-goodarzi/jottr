@@ -1,13 +1,59 @@
 # Jottr Help
 
 ## Themes
-The editor supports multiple color themes that can be changed in Settings:
+Jottr supports app-wide themes that can be changed from the Theme toolbar button or in Settings > Appearance:
 - Light theme: Default light color scheme
 - Dark theme: Dark color scheme for low-light environments
 - Sepia theme: Warm, paper-like theme for comfortable reading
+- Dracula theme: Dark app-wide theme based on the Dracula specification
+- Custom themes: User-defined app, editor, and syntax colors
 
-To change the theme:
-1. Click the Theme button in the toolbar
+To create a custom theme:
+1. Open Settings > Appearance
+2. Edit the theme JSON
+3. Put the theme name in the top-level `name` field
+4. Save the theme
+
+Theme standard:
+```json
+{
+  "name": "My Theme",
+  "app": {
+    "background": "#282a36",
+    "surface": "#343746",
+    "surface_alt": "#424450",
+    "surface_hover": "#44475a",
+    "surface_active": "#6272a4",
+    "text": "#f8f8f2",
+    "muted": "#c6c8d1",
+    "border": "#6272a4",
+    "border_active": "#815cd6",
+    "accent": "#bd93f9",
+    "accent_text": "#f8f8f2",
+    "danger": "#ff5555"
+  },
+  "editor": {
+    "background": "#282a36",
+    "foreground": "#f8f8f2",
+    "selection": "#44475a",
+    "current_line": "#353747",
+    "border": "#6272a4"
+  },
+  "syntax": {
+    "comment": "#6272a4",
+    "keyword": "#ff79c6",
+    "string": "#f1fa8c",
+    "number": "#ffb86c",
+    "function": "#50fa7b",
+    "type": "#8be9fd",
+    "constant": "#bd93f9",
+    "error": "#ff5555"
+  }
+}
+```
+
+To change the editor theme:
+1. Click the Theme button in the toolbar or open Settings > Appearance
 2. Select your preferred theme
 3. Changes are applied immediately
 

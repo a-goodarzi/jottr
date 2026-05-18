@@ -9,7 +9,7 @@ if os.path.exists(vendor_dir):
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
                             QTextEdit, QListWidget, QInputDialog, QMenu, QFileDialog, QDialog,
                             QToolBar, QCompleter, QListWidgetItem, QLineEdit, QPushButton, QMessageBox, QLabel, QToolTip)
-from PyQt6.QtCore import Qt, QUrl, QTimer, QStringListModel, QEvent, QSize, QRect
+from PyQt6.QtCore import Qt, QUrl, QTimer, QStringListModel, QEvent, QSize, QRect, QPropertyAnimation, QEasingCurve
 from PyQt6.QtGui import (QAction, QShortcut, QTextCharFormat, QSyntaxHighlighter, QIcon, QFont, QKeySequence,
                         QPainter, QPen, QColor, QFontMetrics, QTextDocument, QTextCursor)
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -53,6 +53,12 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
         self.settings_manager = settings_manager
         self.spell_check_enabled = True
         self.USE_ENCHANT = USE_ENCHANT  # Store the global flag
+        self.markdown_formats = {}
+        self.set_theme(
+            self.settings_manager.get_theme(),
+            self.settings_manager.get_custom_themes(),
+            rehighlight=False
+        )
         
         try:
             if self.USE_ENCHANT:
@@ -65,6 +71,48 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
             print(f"Spell checker initialization error: {str(e)}, falling back to pyspellchecker")
             self.spell = SpellChecker()
             self.USE_ENCHANT = False
+
+    def set_theme(self, theme_name=None, custom_themes=None, rehighlight=True):
+        """Refresh Markdown syntax colors from the active editor theme."""
+        theme = ThemeManager.get_theme(
+            theme_name or self.settings_manager.get_theme(),
+            custom_themes if custom_themes is not None else self.settings_manager.get_custom_themes()
+        )
+        self.markdown_formats = self.build_markdown_formats(theme)
+        if rehighlight:
+            self.rehighlight()
+
+    def build_markdown_formats(self, theme):
+        syntax = theme["syntax"]
+        editor = theme["editor"]
+
+        def make_format(color, bold=False, italic=False, monospace=False, background=None):
+            text_format = QTextCharFormat()
+            text_format.setForeground(QColor(color))
+            if background:
+                text_format.setBackground(QColor(background))
+            if bold:
+                text_format.setFontWeight(QFont.Weight.Bold)
+            if italic:
+                text_format.setFontItalic(True)
+            if monospace:
+                text_format.setFontFamily("Monospace")
+            return text_format
+
+        return {
+            "heading": make_format(syntax["keyword"], bold=True),
+            "marker": make_format(syntax["comment"], bold=True),
+            "emphasis": make_format(syntax["type"], italic=True),
+            "strong": make_format(syntax["function"], bold=True),
+            "code": make_format(syntax.get("constant", syntax["number"]), monospace=True, background=editor["current_line"]),
+            "link": make_format(syntax["function"]),
+            "url": make_format(syntax["string"]),
+            "quote": make_format(syntax["comment"], italic=True),
+            "list": make_format(syntax["keyword"], bold=True),
+            "table": make_format(syntax["type"]),
+            "html": make_format(syntax["type"]),
+            "rule": make_format(syntax["comment"])
+        }
 
     def check_word(self, word):
         """Check if a word is spelled correctly"""
@@ -125,7 +173,73 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
             user_dict.append(word)
             self.settings_manager.save_setting('user_dictionary', user_dict)
 
+    def highlight_markdown(self, text):
+        skip_ranges = []
+        self.setCurrentBlockState(0)
+
+        fence_match = re.match(r'^\s*(`{3,}|~{3,})', text)
+        if self.previousBlockState() == 1:
+            self.setFormat(0, len(text), self.markdown_formats["code"])
+            skip_ranges.append((0, len(text)))
+            if not fence_match:
+                self.setCurrentBlockState(1)
+            return skip_ranges
+
+        if fence_match:
+            self.setFormat(0, len(text), self.markdown_formats["code"])
+            self.setCurrentBlockState(1)
+            skip_ranges.append((0, len(text)))
+            return skip_ranges
+
+        heading_match = re.match(r'^(#{1,6})(\s+.*)$', text)
+        if heading_match:
+            self.setFormat(heading_match.start(1), len(heading_match.group(1)), self.markdown_formats["marker"])
+            self.setFormat(heading_match.start(2), len(heading_match.group(2)), self.markdown_formats["heading"])
+
+        quote_match = re.match(r'^(\s*>+)(.*)$', text)
+        if quote_match:
+            self.setFormat(quote_match.start(1), len(quote_match.group(1)), self.markdown_formats["marker"])
+            self.setFormat(quote_match.start(2), len(quote_match.group(2)), self.markdown_formats["quote"])
+
+        list_match = re.match(r'^(\s*(?:[-+*]|\d+[.)])\s+(?:\[[ xX]\]\s+)?)', text)
+        if list_match:
+            self.setFormat(list_match.start(1), len(list_match.group(1)), self.markdown_formats["list"])
+
+        if re.match(r'^\s*[-*_](?:\s*[-*_]){2,}\s*$', text):
+            self.setFormat(0, len(text), self.markdown_formats["rule"])
+
+        if "|" in text and re.search(r'\S\s*\|\s*\S', text):
+            for match in re.finditer(r'\|', text):
+                self.setFormat(match.start(), 1, self.markdown_formats["table"])
+
+        for match in re.finditer(r'(`+)([^`]+)(\1)', text):
+            self.setFormat(match.start(), match.end() - match.start(), self.markdown_formats["code"])
+            skip_ranges.append((match.start(), match.end()))
+
+        for match in re.finditer(r'(!?\[)([^\]]+)(\]\()([^)]+)(\))', text):
+            self.setFormat(match.start(1), len(match.group(1)), self.markdown_formats["marker"])
+            self.setFormat(match.start(2), len(match.group(2)), self.markdown_formats["link"])
+            self.setFormat(match.start(3), len(match.group(3)), self.markdown_formats["marker"])
+            self.setFormat(match.start(4), len(match.group(4)), self.markdown_formats["url"])
+            self.setFormat(match.start(5), len(match.group(5)), self.markdown_formats["marker"])
+            skip_ranges.append((match.start(4), match.end(4)))
+
+        for match in re.finditer(r'(\*\*|__)(.+?)\1', text):
+            self.setFormat(match.start(), match.end() - match.start(), self.markdown_formats["strong"])
+
+        for match in re.finditer(r'(?<!\*)\*([^*\n]+)\*(?!\*)|(?<!_)_([^_\n]+)_(?!_)', text):
+            self.setFormat(match.start(), match.end() - match.start(), self.markdown_formats["emphasis"])
+
+        for match in re.finditer(r'</?[A-Za-z][^>]*>', text):
+            self.setFormat(match.start(), match.end() - match.start(), self.markdown_formats["html"])
+
+        return skip_ranges
+
+    def is_in_ranges(self, index, ranges):
+        return any(start <= index < end for start, end in ranges)
+
     def highlightBlock(self, text):
+        skip_ranges = self.highlight_markdown(text)
         if not self.spell_check_enabled:
             return
 
@@ -143,7 +257,7 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
             length = len(word)
             
             # Only spell check Latin words
-            if self.is_latin_word(word):
+            if self.is_latin_word(word) and not self.is_in_ranges(index, skip_ranges):
                 # Check if word is in user dictionary first
                 if word not in user_dict:
                     try:
@@ -420,6 +534,7 @@ class EditorTab(QWidget):
         self.settings_manager = settings_manager
         self.current_file = None
         self.current_font = self.settings_manager.get_font()
+        self.current_theme = self.settings_manager.get_theme()
         self.web_view = None  # Initialize to None
         self.main_window = None  # Initialize main_window to None
         self.markdown_preview_visible = False
@@ -427,6 +542,8 @@ class EditorTab(QWidget):
         self.editor_scroll_pending = False
         self.syncing_markdown_scroll = False
         self.preview_scroll_timer = None
+        self.markdown_render_timer = None
+        self.editor_scroll_animation = None
         self.pending_preview_source_line = None
         self.ignore_preview_scroll_until = 0
         self.preview_user_scroll_until = 0
@@ -462,12 +579,21 @@ class EditorTab(QWidget):
         self.backup_timer.timeout.connect(self.force_save)
         self.backup_timer.start(5000)  # Backup every 5 seconds
 
-        self.preview_scroll_timer = QTimer()
+        self.preview_scroll_timer = QTimer(self)
         self.preview_scroll_timer.timeout.connect(self.schedule_editor_scroll_sync)
         self.preview_scroll_timer.setInterval(250)
+
+        self.markdown_render_timer = QTimer(self)
+        self.markdown_render_timer.setSingleShot(True)
+        self.markdown_render_timer.setInterval(180)
+        self.markdown_render_timer.timeout.connect(self.update_markdown_preview)
         
         # Apply theme
-        ThemeManager.apply_theme(self.editor, self.settings_manager.get_theme())
+        ThemeManager.apply_theme(
+            self.editor,
+            self.current_theme,
+            self.settings_manager.get_custom_themes()
+        )
         
         # Track if content has been modified
         self.editor.document().modificationChanged.connect(self.handle_modification)
@@ -486,7 +612,7 @@ class EditorTab(QWidget):
         self.selected_suggestion_index = -1
         self.current_suggestions = []
         self.editor.textChanged.connect(self.handle_text_changed)
-        self.editor.textChanged.connect(self.update_markdown_preview)
+        self.editor.textChanged.connect(self.schedule_markdown_preview_update)
         self.editor.cursorPositionChanged.connect(self.schedule_markdown_cursor_sync)
         self.editor.verticalScrollBar().valueChanged.connect(self.schedule_markdown_scroll_sync)
 
@@ -497,9 +623,11 @@ class EditorTab(QWidget):
         
         # Create splitter for editor and side panes
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.setObjectName("workspaceSplitter")
         
         # Create text editor with default font
         self.editor = CompletingTextEdit(self)  # Pass self as parent
+        self.editor.setObjectName("writingEditor")
         self.editor.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.editor.customContextMenuRequested.connect(self.show_context_menu)
         self.editor.set_line_numbers_visible(
@@ -508,14 +636,17 @@ class EditorTab(QWidget):
         self.update_font(self.current_font)
 
         self.editor_pane = QWidget()
+        self.editor_pane.setObjectName("editorPane")
         editor_pane_layout = QHBoxLayout(self.editor_pane)
-        editor_pane_layout.setContentsMargins(0, 0, 0, 0)
+        editor_pane_layout.setContentsMargins(12, 0, 12, 10)
         editor_pane_layout.setSpacing(0)
 
         self.markdown_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.markdown_splitter.setObjectName("markdownSplitter")
         self.markdown_splitter.addWidget(self.editor)
 
         self.markdown_preview = QWebEngineView()
+        self.markdown_preview.setObjectName("markdownPreview")
         self.markdown_preview.setPage(MarkdownPreviewPage(self.markdown_preview))
         preview_settings = self.markdown_preview.settings()
         preview_settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
@@ -540,39 +671,28 @@ class EditorTab(QWidget):
         
         # Create snippet widget
         self.snippet_widget = QWidget()
+        self.snippet_widget.setObjectName("sidePanel")
         snippet_layout = QVBoxLayout(self.snippet_widget)
         snippet_layout.setContentsMargins(0, 0, 0, 0)
+        snippet_layout.setSpacing(0)
         
         # Snippet header
         snippet_header = QWidget()
-        snippet_header.setFixedHeight(28)  # Match browser toolbar height
-        snippet_header.setStyleSheet("""
-            QWidget {
-                background-color: palette(window);
-                padding: 0px;
-                margin: 0px;
-            }
-            QPushButton {
-                border: none;
-                padding: 0px;
-                margin: 0px;
-                color: palette(text);
-            }
-            QPushButton:hover {
-                background-color: palette(highlight);
-                color: palette(highlighted-text);
-            }
-        """)
+        snippet_header.setObjectName("panelHeader")
+        snippet_header.setFixedHeight(36)
         header_layout = QHBoxLayout(snippet_header)
-        header_layout.setContentsMargins(4, 2, 4, 2)  # Tight margins to match browser toolbar
-        header_layout.setSpacing(4)  # Reduce spacing between widgets
+        header_layout.setContentsMargins(10, 4, 8, 4)
+        header_layout.setSpacing(6)
         
         snippet_title = QLabel("Snippets")
-        snippet_title.setStyleSheet("font-weight: bold; padding: 0px; margin: 0px;")
+        snippet_title.setObjectName("panelTitle")
         header_layout.addWidget(snippet_title)
+        header_layout.addStretch()
         
         snippet_close = QPushButton("×")
-        snippet_close.setFixedSize(20, 20)
+        snippet_close.setObjectName("panelCloseButton")
+        snippet_close.setFixedSize(24, 24)
+        snippet_close.setToolTip("Close snippets")
         snippet_close.clicked.connect(lambda: self.toggle_pane("snippets"))
         header_layout.addWidget(snippet_close)
         
@@ -580,27 +700,7 @@ class EditorTab(QWidget):
         
         # Snippet list
         self.snippet_list = QListWidget()
-        self.snippet_list.setStyleSheet("""
-            QListWidget {
-                border: none;
-                background-color: palette(base);
-            }
-            QListWidget::item {
-                padding: 4px;
-                border-radius: 2px;
-            }
-            QListWidget::item:selected {
-                background-color: palette(highlight);
-                color: palette(highlighted-text);
-            }
-            QListWidget::item:selected:hover {
-                background-color: palette(highlight);
-                color: palette(highlighted-text);
-            }
-            QListWidget::item:hover:!selected {
-                background-color: palette(alternate-base);
-            }
-        """)
+        self.snippet_list.setObjectName("snippetList")
         self.snippet_list.itemDoubleClicked.connect(self.insert_snippet)
         self.snippet_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.snippet_list.customContextMenuRequested.connect(self.show_snippet_context_menu)
@@ -609,6 +709,7 @@ class EditorTab(QWidget):
         
         # Create browser widget without web view
         self.browser_widget = QWidget()
+        self.browser_widget.setObjectName("sidePanel")
         browser_layout = QVBoxLayout(self.browser_widget)
         browser_layout.setContentsMargins(0, 0, 0, 0)
         browser_layout.setSpacing(0)
@@ -629,6 +730,7 @@ class EditorTab(QWidget):
         
         # Add splitter to layout
         layout.addWidget(self.splitter)
+        self.apply_workspace_style()
         
         # Hide side panes by default
         self.snippet_widget.hide()
@@ -662,30 +764,31 @@ class EditorTab(QWidget):
         
         # Create find/replace toolbar (initially hidden)
         self.find_toolbar = QWidget(self)
+        self.find_toolbar.setObjectName("findToolbar")
         self.find_toolbar.setVisible(False)
-        self.find_toolbar.setFixedHeight(32)  # Set fixed compact height
+        self.find_toolbar.setFixedHeight(40)
         find_layout = QHBoxLayout(self.find_toolbar)
-        find_layout.setContentsMargins(4, 2, 4, 2)  # Reduce vertical margins
-        find_layout.setSpacing(4)  # Reduce spacing between elements
+        find_layout.setContentsMargins(8, 4, 8, 4)
+        find_layout.setSpacing(6)
         
         # Find input
         self.find_input = QLineEdit()
         self.find_input.setPlaceholderText("Find")
         self.find_input.textChanged.connect(self.find_text)
-        self.find_input.setFixedHeight(24)  # Set fixed height for input
+        self.find_input.setFixedHeight(28)
         find_layout.addWidget(self.find_input)
         
         # Replace input
         self.replace_input = QLineEdit()
         self.replace_input.setPlaceholderText("Replace with")
-        self.replace_input.setFixedHeight(24)  # Set fixed height for input
+        self.replace_input.setFixedHeight(28)
         find_layout.addWidget(self.replace_input)
         
         # Find next/previous buttons
         self.find_prev_btn = QPushButton("↑")
         self.find_next_btn = QPushButton("↓")
-        self.find_prev_btn.setFixedSize(24, 24)  # Make buttons square and compact
-        self.find_next_btn.setFixedSize(24, 24)
+        self.find_prev_btn.setFixedSize(28, 28)
+        self.find_next_btn.setFixedSize(28, 28)
         self.find_prev_btn.clicked.connect(lambda: self.find_text(direction='up'))
         self.find_next_btn.clicked.connect(lambda: self.find_text(direction='down'))
         find_layout.addWidget(self.find_prev_btn)
@@ -694,8 +797,8 @@ class EditorTab(QWidget):
         # Replace buttons
         self.replace_btn = QPushButton("Replace")
         self.replace_all_btn = QPushButton("All")  # Shortened text
-        self.replace_btn.setFixedHeight(24)
-        self.replace_all_btn.setFixedHeight(24)
+        self.replace_btn.setFixedHeight(28)
+        self.replace_all_btn.setFixedHeight(28)
         self.replace_btn.clicked.connect(self.replace_text)
         self.replace_all_btn.clicked.connect(self.replace_all)
         find_layout.addWidget(self.replace_btn)
@@ -703,34 +806,20 @@ class EditorTab(QWidget):
         
         # Close button
         close_btn = QPushButton("×")
-        close_btn.setFixedSize(24, 24)
+        close_btn.setFixedSize(28, 28)
         close_btn.clicked.connect(self.toggle_find)
         find_layout.addWidget(close_btn)
         
         # Add styling
-        self.find_toolbar.setStyleSheet("""
-            QWidget {
-                background: palette(window);
-                border-bottom: 1px solid palette(mid);
-            }
-            QLineEdit {
-                border: 1px solid palette(mid);
-                border-radius: 2px;
-                padding: 2px 4px;
-                background: palette(base);
-            }
-            QPushButton {
-                border: 1px solid palette(mid);
-                border-radius: 2px;
-                padding: 2px 4px;
-                background: palette(button);
-            }
-            QPushButton:hover {
-                background: palette(light);
-            }
-        """)
-        
         layout.addWidget(self.find_toolbar)
+
+    def apply_workspace_style(self):
+        """Apply the editor workspace chrome."""
+        theme = ThemeManager.get_theme(
+            self.current_theme,
+            self.settings_manager.get_custom_themes()
+        )
+        self.setStyleSheet(ThemeManager.build_workspace_stylesheet(theme))
         
     def on_text_changed(self):
         """Handle text changes"""
@@ -1240,29 +1329,39 @@ class EditorTab(QWidget):
         # Update font for the editor
         self.editor.setFont(self.current_font)
         
-        # Store font properties in the editor's stylesheet
-        self.editor.setStyleSheet(f"""
-            QTextEdit {{
-                font-family: {self.current_font.family()};
-                font-size: {self.current_font.pointSize()}pt;
-                font-weight: normal;  /* Force Regular weight in stylesheet too */
-                font-style: {('italic' if self.current_font.italic() else 'normal')};
-                background-color: {self.editor.palette().base().color().name()};
-                color: {self.editor.palette().text().color().name()};
-                selection-background-color: {self.editor.palette().highlight().color().name()};
-            }}
-        """)
+        ThemeManager.apply_theme(
+            self.editor,
+            self.current_theme,
+            self.settings_manager.get_custom_themes()
+        )
+        if hasattr(self, "highlighter"):
+            self.highlighter.set_theme(
+                self.current_theme,
+                self.settings_manager.get_custom_themes()
+            )
         self.editor.update_line_number_area_width()
         self.editor.update_line_number_area()
+        self.update_markdown_preview()
 
     def apply_theme(self, theme_name):
         """Apply theme while preserving font properties"""
+        self.current_theme = theme_name
         self.settings_manager.save_theme(theme_name)
-        ThemeManager.apply_theme(self.editor, theme_name)
+        ThemeManager.apply_theme(
+            self.editor,
+            theme_name,
+            self.settings_manager.get_custom_themes()
+        )
         
         # After applying theme, reapply font to ensure properties are preserved
         if hasattr(self, 'current_font'):
             self.update_font(self.current_font)
+        if hasattr(self, "highlighter"):
+            self.highlighter.set_theme(
+                theme_name,
+                self.settings_manager.get_custom_themes()
+            )
+        self.apply_workspace_style()
         self.update_markdown_preview()
 
     def set_line_numbers_visible(self, visible):
@@ -1295,6 +1394,13 @@ class EditorTab(QWidget):
         """Toggle the rendered markdown preview pane."""
         self.set_markdown_preview_visible(not self.markdown_preview_visible)
 
+    def schedule_markdown_preview_update(self):
+        """Render the preview after typing has settled briefly."""
+        if not hasattr(self, 'markdown_preview') or not self.markdown_preview_visible:
+            return
+        if self.markdown_render_timer:
+            self.markdown_render_timer.start()
+
     def update_markdown_preview(self):
         """Render editor markdown into the preview pane."""
         if not hasattr(self, 'markdown_preview') or not self.markdown_preview_visible:
@@ -1324,11 +1430,9 @@ class EditorTab(QWidget):
 
         self.markdown_preview.page().runJavaScript("""
             (async function () {
-                if (!window.mermaid) {
-                    return false;
-                }
-
-                try {
+                let rendered = false;
+                if (window.mermaid) {
+                    try {
                     mermaid.initialize({
                         startOnLoad: false,
                         securityLevel: 'loose',
@@ -1381,18 +1485,38 @@ class EditorTab(QWidget):
                             if (result.bindFunctions) {
                                 result.bindFunctions(diagram);
                             }
+                            rendered = true;
                         } catch (error) {
                             diagram.classList.add('mermaid-error');
                             diagram.textContent = 'Mermaid render error: ' + error.message + '\\n\\n' + source;
+                            rendered = true;
                         }
                     }
-                    return true;
                 } catch (error) {
                     console.error('Mermaid render failed', error);
-                    return false;
                 }
+                }
+
+                if (window.MathJax && window.MathJax.typesetPromise) {
+                    try {
+                        await window.MathJax.typesetPromise();
+                        rendered = true;
+                    } catch (error) {
+                        console.error('MathJax render failed', error);
+                    }
+                }
+
+                return rendered;
             })();
-        """)
+        """, lambda _result: QTimer.singleShot(50, self.sync_markdown_preview_scroll))
+
+    def get_editor_scroll_ratio(self):
+        """Return editor vertical scroll progress as a 0..1 ratio."""
+        scroll_bar = self.editor.verticalScrollBar()
+        maximum = scroll_bar.maximum()
+        if maximum <= 0:
+            return 0.0
+        return max(0.0, min(1.0, scroll_bar.value() / maximum))
 
     def get_editor_top_visible_line(self):
         """Return the 1-based source line nearest the top of the editor viewport."""
@@ -1427,12 +1551,13 @@ class EditorTab(QWidget):
             return
 
         source_line = self.pending_preview_source_line or self.get_editor_top_visible_line()
+        editor_scroll_ratio = self.get_editor_scroll_ratio()
         self.pending_preview_source_line = None
         self.syncing_markdown_scroll = True
         self.ignore_preview_scroll_until = time.time() + 0.75
         self.markdown_preview.page().runJavaScript(
             """
-            (function(targetLine) {
+            (function(targetLine, editorScrollRatio) {
                 const nodes = Array.from(document.querySelectorAll('[data-source-line]'));
                 if (!nodes.length) return;
 
@@ -1443,12 +1568,68 @@ class EditorTab(QWidget):
                     target = node;
                 }
 
-                const top = target.getBoundingClientRect().top + window.scrollY - 16;
-                window.scrollTo(0, Math.max(0, top));
-            })(""" + str(source_line) + """);
+                const doc = document.scrollingElement || document.documentElement;
+                const maxScroll = Math.max(0, doc.scrollHeight - window.innerHeight);
+                const anchorTop = Math.max(0, target.getBoundingClientRect().top + window.scrollY - 16);
+                const ratioTop = maxScroll * Math.max(0, Math.min(1, Number(editorScrollRatio) || 0));
+                let top = anchorTop;
+
+                if (anchorTop >= maxScroll && editorScrollRatio < 0.98) {
+                    top = ratioTop;
+                }
+
+                top = Math.max(0, Math.min(maxScroll, top));
+
+                if (window.__jottrPreviewScrollFrame) {
+                    cancelAnimationFrame(window.__jottrPreviewScrollFrame);
+                }
+
+                const start = window.scrollY;
+                const delta = top - start;
+                if (Math.abs(delta) < 2) {
+                    window.scrollTo(0, top);
+                    return;
+                }
+
+                const duration = 140;
+                const startTime = performance.now();
+                function ease(value) {
+                    return value < 0.5 ? 2 * value * value : 1 - Math.pow(-2 * value + 2, 2) / 2;
+                }
+                function step(now) {
+                    const progress = Math.min(1, (now - startTime) / duration);
+                    window.scrollTo(0, start + delta * ease(progress));
+                    if (progress < 1) {
+                        window.__jottrPreviewScrollFrame = requestAnimationFrame(step);
+                    }
+                }
+                window.__jottrPreviewScrollFrame = requestAnimationFrame(step);
+            })(""" + str(source_line) + ", " + repr(editor_scroll_ratio) + """);
             """,
             lambda _result: setattr(self, 'syncing_markdown_scroll', False)
         )
+
+    def animate_editor_scroll_to(self, value):
+        """Smoothly move the editor scrollbar to the requested value."""
+        scroll_bar = self.editor.verticalScrollBar()
+        target = max(scroll_bar.minimum(), min(scroll_bar.maximum(), int(value)))
+        if abs(scroll_bar.value() - target) < 2:
+            scroll_bar.setValue(target)
+            QTimer.singleShot(0, lambda: setattr(self, 'syncing_markdown_scroll', False))
+            return
+
+        if self.editor_scroll_animation:
+            self.editor_scroll_animation.stop()
+
+        self.editor_scroll_animation = QPropertyAnimation(scroll_bar, b"value", self)
+        self.editor_scroll_animation.setDuration(130)
+        self.editor_scroll_animation.setStartValue(scroll_bar.value())
+        self.editor_scroll_animation.setEndValue(target)
+        self.editor_scroll_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self.editor_scroll_animation.finished.connect(
+            lambda: setattr(self, 'syncing_markdown_scroll', False)
+        )
+        self.editor_scroll_animation.start()
 
     def schedule_editor_scroll_sync(self):
         """Debounce preview scroll events before updating editor scroll."""
@@ -1504,8 +1685,7 @@ class EditorTab(QWidget):
             block_top = layout.blockBoundingRect(block).top() - scroll_bar.value()
 
             self.syncing_markdown_scroll = True
-            scroll_bar.setValue(max(0, round(scroll_bar.value() + block_top - 16)))
-            QTimer.singleShot(0, lambda: setattr(self, 'syncing_markdown_scroll', False))
+            self.animate_editor_scroll_to(round(scroll_bar.value() + block_top - 16))
 
         self.markdown_preview.page().runJavaScript(script, apply_editor_scroll)
 
@@ -1718,6 +1898,20 @@ class EditorTab(QWidget):
                 f'\\[{escaped_expression}\\]</div>'
             )
 
+        def render_code_block(source_line, values, span_start_line=None):
+            span_start_line = span_start_line or source_line
+            code_markup = []
+            for offset, value in enumerate(values):
+                escaped_line = html.escape(value) or " "
+                code_markup.append(
+                    f'<span class="source-code-line" data-source-line="{span_start_line + offset}">'
+                    f'{escaped_line}</span>'
+                )
+            return (
+                f'<pre data-source-line="{source_line}">'
+                f'<code>{"".join(code_markup)}</code></pre>'
+            )
+
         def is_indented_code_line(value):
             return value.startswith("    ") or value.startswith("\t")
 
@@ -1785,10 +1979,8 @@ class EditorTab(QWidget):
 
             if stripped.startswith("```"):
                 if in_code_block:
-                    body.append(
-                        f'<pre data-source-line="{code_start_line or line_number}">'
-                        f"<code>{html.escape(chr(10).join(code_lines))}</code></pre>"
-                    )
+                    block_line = code_start_line or line_number
+                    body.append(render_code_block(block_line, code_lines, block_line + 1))
                     code_lines = []
                     code_start_line = None
                     in_code_block = False
@@ -1864,10 +2056,7 @@ class EditorTab(QWidget):
                 flush_paragraph()
                 close_list()
                 indented_code_lines, line_index = collect_indented_code(line_index)
-                body.append(
-                    f'<pre data-source-line="{line_number}">'
-                    f"<code>{html.escape(chr(10).join(indented_code_lines))}</code></pre>"
-                )
+                body.append(render_code_block(line_number, indented_code_lines))
                 continue
 
             if ("|" in stripped and
@@ -1915,10 +2104,8 @@ class EditorTab(QWidget):
             line_index += 1
 
         if in_code_block:
-            body.append(
-                f'<pre data-source-line="{code_start_line or 1}">'
-                f"<code>{html.escape(chr(10).join(code_lines))}</code></pre>"
-            )
+            block_line = code_start_line or 1
+            body.append(render_code_block(block_line, code_lines, block_line + 1))
         if in_math_block:
             body.append(render_display_math(math_start_line or 1, chr(10).join(math_lines)))
         flush_paragraph()
@@ -1962,6 +2149,10 @@ class EditorTab(QWidget):
                     padding: 2px 4px;
                 }}
                 pre code {{ background: transparent; padding: 0; }}
+                .source-code-line {{
+                    display: block;
+                    min-height: 1.55em;
+                }}
                 blockquote {{
                     border-left: 4px solid #d0d7de;
                     color: #57606a;
@@ -2076,6 +2267,7 @@ class EditorTab(QWidget):
         )
         body_html = self.render_mermaid_blocks(body_html)
         body_html = self.add_source_line_anchors(body_html, text)
+        body_html = self.add_code_line_anchors(body_html)
 
         return self.wrap_markdown_preview_html(body_html, content_base_url)
 
@@ -2377,10 +2569,44 @@ class EditorTab(QWidget):
             body_html
         )
 
+    def add_code_line_anchors(self, body_html):
+        """Attach source-line attributes to individual rendered code lines."""
+        def replace_pre(match):
+            pre_attrs = match.group(1) or ""
+            code_attrs = match.group(2) or ""
+            code_text = match.group(3)
+            line_match = re.search(r'data-source-line="(\d+)"', pre_attrs)
+            if not line_match or 'class="source-code-line"' in code_text:
+                return match.group(0)
+
+            source_line = int(line_match.group(1))
+            span_start_line = source_line + 1 if "language-" in code_attrs else source_line
+            lines = code_text.splitlines()
+            if not lines:
+                return match.group(0)
+
+            spans = []
+            for offset, value in enumerate(lines):
+                spans.append(
+                    f'<span class="source-code-line" data-source-line="{span_start_line + offset}">'
+                    f'{value or " "}</span>'
+                )
+            return f'<pre{pre_attrs}><code{code_attrs}>{"".join(spans)}</code></pre>'
+
+        return re.sub(
+            r'<pre([^>]*)><code([^>]*)>(.*?)</code></pre>',
+            replace_pre,
+            body_html,
+            flags=re.DOTALL
+        )
+
     def wrap_markdown_preview_html(self, body_html, content_base_url=""):
         """Wrap rendered body HTML in Jottr preview CSS and scripts."""
         mermaid_script_content = self.get_mermaid_script_content()
         base_tag = f'<base href="{html.escape(content_base_url, quote=True)}">' if content_base_url else ''
+        preview_font = QFont(getattr(self, "current_font", self.editor.font()))
+        preview_family = html.escape(preview_font.family().replace("\\", "\\\\").replace('"', '\\"'), quote=True)
+        preview_size = max(8, preview_font.pointSize() if preview_font.pointSize() > 0 else 14)
         return f"""
         <html>
         <head>
@@ -2388,8 +2614,8 @@ class EditorTab(QWidget):
             <style>
                 body {{
                     color: #202124;
-                    font-family: "DejaVu Sans", "Segoe UI", sans-serif;
-                    font-size: 14px;
+                    font-family: "{preview_family}", "Segoe UI", sans-serif;
+                    font-size: {preview_size}pt;
                     line-height: 1.55;
                     margin: 18px;
                 }}
@@ -2414,7 +2640,7 @@ class EditorTab(QWidget):
                     margin: 0.9em 0;
                 }}
                 code {{
-                    font-family: "DejaVu Sans Mono", "Consolas", monospace;
+                    font-family: "{preview_family}", "Consolas", monospace;
                     background: #f6f8fa;
                     border-radius: 4px;
                     padding: 2px 4px;
@@ -2725,46 +2951,21 @@ class EditorTab(QWidget):
         """Setup browser toolbar with navigation controls"""
         # Browser toolbar
         toolbar = QWidget()
-        toolbar.setFixedHeight(32)
-        toolbar.setStyleSheet("""
-            QWidget {
-                background: palette(window);
-                border-bottom: 1px solid palette(mid);
-            }
-            QLineEdit {
-                border: 1px solid palette(mid);
-                border-radius: 3px;
-                padding: 2px 8px;
-                background: palette(base);
-                selection-background-color: palette(highlight);
-                margin: 4px;
-            }
-            QPushButton {
-                background: transparent;
-                border: none;
-                border-radius: 3px;
-                padding: 4px;
-                margin: 2px;
-                color: palette(text);
-            }
-            QPushButton:hover {
-                background: palette(highlight);
-                color: palette(highlighted-text);
-            }
-        """)
+        toolbar.setObjectName("browserToolbar")
+        toolbar.setFixedHeight(40)
         
         toolbar_layout = QHBoxLayout(toolbar)
-        toolbar_layout.setContentsMargins(4, 0, 4, 0)
-        toolbar_layout.setSpacing(2)
+        toolbar_layout.setContentsMargins(8, 4, 8, 4)
+        toolbar_layout.setSpacing(5)
         
         # Navigation buttons
         self.back_btn = QPushButton("←")
-        self.back_btn.setFixedSize(24, 24)
+        self.back_btn.setFixedSize(28, 28)
         self.back_btn.setEnabled(False)  # Initially disabled
         toolbar_layout.addWidget(self.back_btn)
         
         self.forward_btn = QPushButton("→")
-        self.forward_btn.setFixedSize(24, 24)
+        self.forward_btn.setFixedSize(28, 28)
         self.forward_btn.setEnabled(False)  # Initially disabled
         toolbar_layout.addWidget(self.forward_btn)
         
@@ -2776,7 +2977,7 @@ class EditorTab(QWidget):
         
         # Close button
         close_btn = QPushButton("×")
-        close_btn.setFixedSize(24, 24)
+        close_btn.setFixedSize(28, 28)
         close_btn.setFont(QFont("Arial", 14))
         close_btn.clicked.connect(lambda: self.toggle_pane("browser"))
         toolbar_layout.addWidget(close_btn)
@@ -2813,6 +3014,8 @@ class EditorTab(QWidget):
     def enable_focus_mode(self):
         """Enable focus mode"""
         self.focus_mode = True
+        if self.main_window and hasattr(self.main_window, 'update_focus_mode_action'):
+            self.main_window.update_focus_mode_action(True)
         
         # Store current window state
         window = self.window()
@@ -2832,22 +3035,36 @@ class EditorTab(QWidget):
         # Hide panes
         self.snippet_widget.hide()
         self.browser_widget.hide()
+        self.editor_pane.setMaximumWidth(900)
+        self.editor_pane.setStyleSheet("""
+            QWidget#editorPane {
+                background: #eef3f8;
+            }
+            QTextEdit#writingEditor {
+                background: #ffffff;
+                border: 1px solid #d7e0ea;
+                border-radius: 3px;
+                padding: 36px 48px;
+                font-size: 15pt;
+            }
+        """)
         
         # Add exit button
         self.exit_focus_btn = QPushButton("Exit Focus Mode", self)
         self.exit_focus_btn.clicked.connect(self.disable_focus_mode)
         self.exit_focus_btn.setStyleSheet("""
             QPushButton {
-                background-color: palette(window);
-                border: 1px solid palette(mid);
+                background-color: #ffffff;
+                border: 1px solid #cbd5e1;
                 border-radius: 3px;
-                padding: 8px 16px;
+                padding: 9px 16px;
                 min-width: 120px;
                 min-height: 32px;
+                color: #17202a;
             }
             QPushButton:hover {
-                background: palette(highlight);
-                color: palette(highlighted-text);
+                background: #eaf3ff;
+                border-color: #9fc8f7;
             }
         """)
         self.update_exit_button_position()
@@ -2859,6 +3076,8 @@ class EditorTab(QWidget):
     def disable_focus_mode(self):
         """Disable focus mode"""
         self.focus_mode = False
+        if self.main_window and hasattr(self.main_window, 'update_focus_mode_action'):
+            self.main_window.update_focus_mode_action(False)
         
         window = self.window()
         
@@ -2873,6 +3092,9 @@ class EditorTab(QWidget):
         # Show UI elements
         window.toolbar.show()
         window.tab_widget.tabBar().show()
+        self.editor_pane.setMaximumWidth(16777215)
+        self.editor_pane.setStyleSheet("")
+        self.apply_workspace_style()
         
         # Remove exit button
         if hasattr(self, 'exit_focus_btn'):

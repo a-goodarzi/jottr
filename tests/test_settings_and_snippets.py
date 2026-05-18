@@ -45,6 +45,7 @@ class SettingsAndSnippetTests(unittest.TestCase):
         self.assertTrue(Path(manager.snippets_dir).is_dir())
         self.assertEqual(manager.get_setting("font_size"), 12)
         self.assertTrue(manager.get_setting("spell_check"))
+        self.assertEqual(manager.get_setting("icon_contrast"), "auto")
         self.assertEqual(manager.get_setting("missing", "fallback"), "fallback")
 
     def test_settings_manager_persists_single_settings_and_font(self):
@@ -60,6 +61,31 @@ class SettingsAndSnippetTests(unittest.TestCase):
         self.assertEqual(reloaded.get_font().family(), "Serif")
         self.assertEqual(reloaded.get_font().pointSize(), 15)
         self.assertTrue(reloaded.get_font().italic())
+
+    def test_settings_manager_persists_custom_themes(self):
+        manager = SettingsManager()
+        manager.save_custom_themes({
+            "Forest": {
+                "bg": "#102018",
+                "text": "#e8f5e9",
+                "selection": "#355e3b"
+            },
+            "Broken": {
+                "bg": "green",
+                "text": "#ffffff",
+                "selection": "#000000"
+            }
+        })
+        manager.save_theme("Forest")
+
+        reloaded = SettingsManager()
+
+        self.assertEqual(reloaded.get_theme(), "Forest")
+        forest = reloaded.get_custom_themes()["Forest"]
+        self.assertEqual(forest["editor"]["background"], "#102018")
+        self.assertEqual(forest["editor"]["foreground"], "#e8f5e9")
+        self.assertEqual(forest["editor"]["selection"], "#355e3b")
+        self.assertNotIn("Broken", reloaded.get_custom_themes())
 
     def test_settings_manager_handles_invalid_json_by_keeping_defaults(self):
         manager = SettingsManager()
@@ -97,6 +123,21 @@ class SettingsAndSnippetTests(unittest.TestCase):
         self.assertIn("Light", themes)
         self.assertIn("Dark", themes)
         self.assertIn("Sepia", themes)
+        self.assertIn("Dracula", themes)
+        self.assertIn("Monokai", themes)
+        self.assertIn("Monaspace", themes)
+        self.assertIn("Tokyo Night", themes)
+        self.assertIn("Matcha", themes)
+        self.assertIn(
+            "Forest",
+            ThemeManager.get_themes({
+                "Forest": {
+                    "bg": "#102018",
+                    "text": "#e8f5e9",
+                    "selection": "#355e3b"
+                }
+            })
+        )
 
         from PyQt6.QtWidgets import QTextEdit
 
@@ -104,8 +145,26 @@ class SettingsAndSnippetTests(unittest.TestCase):
         ThemeManager.apply_theme(editor, "Dark")
 
         style = editor.styleSheet()
-        self.assertIn("#1e1e1e", style)
-        self.assertIn("#d4d4d4", style)
+        self.assertIn("#111827", style)
+        self.assertIn("#e5e7eb", style)
+
+        ThemeManager.apply_theme(editor, "Forest", {
+            "Forest": {
+                "bg": "#102018",
+                "text": "#e8f5e9",
+                "selection": "#355e3b"
+            }
+        })
+        self.assertIn("#102018", editor.styleSheet())
+
+        dracula = ThemeManager.get_theme("Dracula")
+        self.assertEqual(dracula["editor"]["background"], "#282a36")
+        self.assertEqual(dracula["syntax"]["keyword"], "#ff79c6")
+        self.assertIn("#282a36", ThemeManager.build_app_stylesheet(dracula))
+        dialog_style = ThemeManager.build_dialog_stylesheet(dracula)
+        self.assertIn("QComboBox QAbstractItemView", dialog_style)
+        self.assertIn("selection-color", dialog_style)
+        self.assertIn("#f8f8f2", dialog_style)
 
 
 if __name__ == "__main__":

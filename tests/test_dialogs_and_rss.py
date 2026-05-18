@@ -49,10 +49,19 @@ class DialogAndRssTests(unittest.TestCase):
         manager = SettingsManager()
         manager.save_setting("search_sites", {"News": "site:news.example"})
         manager.save_setting("user_dictionary", ["jottr"])
+        manager.save_custom_themes({
+            "Forest": {
+                "bg": "#102018",
+                "text": "#e8f5e9",
+                "selection": "#355e3b"
+            }
+        })
+        manager.save_theme("Forest")
 
         dialog = SettingsDialog(manager)
         dialog.homepage_edit.setText("https://home.example")
-        dialog.theme_combo.setCurrentText("Fusion")
+        dialog.editor_theme_combo.setCurrentText("Forest")
+        dialog.icon_contrast_combo.setCurrentText("light")
         dialog.markdown_scroll_sync_check.setChecked(False)
         dialog.editor_line_numbers_check.setChecked(False)
 
@@ -61,9 +70,66 @@ class DialogAndRssTests(unittest.TestCase):
         self.assertEqual(data["homepage"], "https://home.example")
         self.assertEqual(data["search_sites"], {"News": "site:news.example"})
         self.assertEqual(data["user_dictionary"], ["jottr"])
-        self.assertEqual(data["ui_theme"], "Fusion")
+        self.assertEqual(data["theme"], "Forest")
+        self.assertEqual(data["custom_themes"]["Forest"]["editor"]["background"], "#102018")
+        self.assertEqual(data["icon_contrast"], "light")
         self.assertFalse(data["markdown_scroll_sync"])
         self.assertFalse(data["editor_line_numbers"])
+
+    def test_settings_dialog_creates_and_deletes_custom_theme(self):
+        manager = SettingsManager()
+        dialog = SettingsDialog(manager)
+
+        dialog.theme_json_edit.setPlainText(json.dumps({
+            "name": "Ink",
+            "app": {
+                "background": "#fafafa",
+                "surface": "#ffffff",
+                "text": "#111111"
+            },
+            "editor": {
+                "background": "#fafafa",
+                "foreground": "#111111",
+                "selection": "#cccccc"
+            },
+            "syntax": {}
+        }))
+        dialog.save_custom_theme()
+
+        self.assertIn("Ink", dialog.get_data()["custom_themes"])
+        self.assertEqual(dialog.editor_theme_combo.currentText(), "Ink")
+
+        dialog.custom_theme_list.setCurrentRow(0)
+        dialog.delete_custom_theme()
+
+        self.assertNotIn("Ink", dialog.get_data()["custom_themes"])
+
+    def test_settings_dialog_saves_advanced_theme_json(self):
+        manager = SettingsManager()
+        dialog = SettingsDialog(manager)
+
+        dialog.theme_json_edit.setPlainText(json.dumps({
+            "name": "Dracula Local",
+            "app": {
+                "background": "#282a36",
+                "surface": "#343746",
+                "accent": "#bd93f9"
+            },
+            "editor": {
+                "background": "#282a36",
+                "foreground": "#f8f8f2",
+                "selection": "#44475a"
+            },
+            "syntax": {
+                "keyword": "#ff79c6"
+            }
+        }))
+        dialog.save_custom_theme()
+
+        theme = dialog.get_data()["custom_themes"]["Dracula Local"]
+        self.assertEqual(theme["app"]["background"], "#282a36")
+        self.assertEqual(theme["editor"]["foreground"], "#f8f8f2")
+        self.assertEqual(theme["syntax"]["keyword"], "#ff79c6")
 
     def test_snippet_editor_dialog_returns_entered_data(self):
         dialog = SnippetEditorDialog("Title", "Body")
