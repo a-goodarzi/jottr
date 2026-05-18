@@ -1,9 +1,11 @@
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
+from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
                             QLineEdit, QPushButton, QListWidget, QTabWidget,
-                            QWidget, QCheckBox, QMessageBox, QInputDialog, QComboBox)
-from PyQt5.QtCore import Qt
+                            QWidget, QCheckBox, QMessageBox, QInputDialog, QComboBox,
+                            QGroupBox, QPlainTextEdit)
+from PyQt6.QtCore import Qt
 import json
 import os
+from theme_manager import ThemeManager
 
 class SettingsDialog(QDialog):
     def __init__(self, settings_manager, parent=None):
@@ -18,23 +20,87 @@ class SettingsDialog(QDialog):
         """Setup the UI components"""
         # Create layout
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 14)
+        layout.setSpacing(12)
         
         # Create tab widget
         tabs = QTabWidget()
+        tabs.setDocumentMode(False)
         
         # Appearance tab
         appearance_tab = QWidget()
         appearance_layout = QVBoxLayout(appearance_tab)
+        appearance_layout.setSpacing(12)
         
-        # UI Theme
-        theme_layout = QHBoxLayout()
-        theme_label = QLabel("UI Theme:")
-        self.theme_combo = QComboBox()
-        self.theme_combo.addItems(['system', 'Fusion', 'Windows', 'Macintosh'])
-        self.theme_combo.setCurrentText(self.settings_manager.get_ui_theme())
-        theme_layout.addWidget(theme_label)
-        theme_layout.addWidget(self.theme_combo)
-        appearance_layout.addLayout(theme_layout)
+        editor_theme_layout = QHBoxLayout()
+        editor_theme_label = QLabel("Theme:")
+        self.editor_theme_combo = QComboBox()
+        self.refresh_editor_theme_combo()
+        self.editor_theme_combo.setCurrentText(self.settings_manager.get_theme())
+        editor_theme_layout.addWidget(editor_theme_label)
+        editor_theme_layout.addWidget(self.editor_theme_combo)
+        appearance_layout.addLayout(editor_theme_layout)
+
+        icon_layout = QHBoxLayout()
+        icon_label = QLabel("Icon Contrast:")
+        self.icon_contrast_combo = QComboBox()
+        self.icon_contrast_combo.addItems(["auto", "light", "dark", "accent"])
+        self.icon_contrast_combo.setCurrentText(
+            self.settings_manager.get_setting("icon_contrast", "auto")
+        )
+        icon_layout.addWidget(icon_label)
+        icon_layout.addWidget(self.icon_contrast_combo)
+        appearance_layout.addLayout(icon_layout)
+
+        theme_box = QGroupBox("Custom App Themes")
+        theme_box_layout = QVBoxLayout(theme_box)
+        standard_label = QLabel(
+            "Themes control app chrome, editor colors, panels, menus, and selection states."
+        )
+        standard_label.setStyleSheet("color: gray; font-size: 10px;")
+        theme_box_layout.addWidget(standard_label)
+
+        self.custom_theme_list = QListWidget()
+        self.custom_theme_list.currentItemChanged.connect(self.load_selected_custom_theme)
+        theme_box_layout.addWidget(self.custom_theme_list)
+
+        json_label = QLabel("Theme JSON:")
+        json_label.setStyleSheet("color: gray; font-size: 10px;")
+        theme_box_layout.addWidget(json_label)
+        self.theme_json_edit = QPlainTextEdit()
+        self.theme_json_edit.setPlaceholderText(json.dumps(ThemeManager.get_theme_standard(), indent=2))
+        self.theme_json_edit.setMinimumHeight(170)
+        theme_box_layout.addWidget(self.theme_json_edit)
+
+        theme_buttons = QHBoxLayout()
+        save_theme = QPushButton("Save Theme")
+        delete_theme = QPushButton("Delete Theme")
+        use_theme = QPushButton("Use Selected")
+        format_json = QPushButton("Format JSON")
+        save_theme.clicked.connect(self.save_custom_theme)
+        delete_theme.clicked.connect(self.delete_custom_theme)
+        use_theme.clicked.connect(self.use_selected_custom_theme)
+        format_json.clicked.connect(self.format_theme_json)
+        theme_buttons.addWidget(save_theme)
+        theme_buttons.addWidget(delete_theme)
+        theme_buttons.addWidget(use_theme)
+        theme_buttons.addWidget(format_json)
+        theme_box_layout.addLayout(theme_buttons)
+        appearance_layout.addWidget(theme_box)
+        self.load_custom_theme_list()
+
+        self.markdown_scroll_sync_check = QCheckBox("Sync markdown editor and preview scrolling")
+        self.markdown_scroll_sync_check.setChecked(
+            self.settings_manager.get_setting('markdown_scroll_sync', True)
+        )
+        appearance_layout.addWidget(self.markdown_scroll_sync_check)
+
+        self.editor_line_numbers_check = QCheckBox("Show editor line numbers")
+        self.editor_line_numbers_check.setChecked(
+            self.settings_manager.get_setting('editor_line_numbers', True)
+        )
+        appearance_layout.addWidget(self.editor_line_numbers_check)
+        appearance_layout.addStretch()
         
         # Add appearance tab
         tabs.addTab(appearance_tab, "Appearance")
@@ -42,6 +108,7 @@ class SettingsDialog(QDialog):
         # Browser tab
         browser_tab = QWidget()
         browser_layout = QVBoxLayout(browser_tab)
+        browser_layout.setSpacing(10)
         
         # Homepage setting
         homepage_layout = QHBoxLayout()
@@ -76,6 +143,7 @@ class SettingsDialog(QDialog):
         # Dictionary tab
         dict_tab = QWidget()
         dict_layout = QVBoxLayout(dict_tab)
+        dict_layout.setSpacing(10)
         
         dict_label = QLabel("User Dictionary:")
         dict_layout.addWidget(dict_label)
@@ -109,6 +177,110 @@ class SettingsDialog(QDialog):
         buttons.addWidget(ok_button)
         buttons.addWidget(cancel_button)
         layout.addLayout(buttons)
+        self.apply_dialog_style()
+
+    def apply_dialog_style(self):
+        theme = ThemeManager.get_theme(
+            self.settings_manager.get_theme(),
+            self.settings_manager.get_custom_themes()
+        )
+        self.setStyleSheet(ThemeManager.build_dialog_stylesheet(theme))
+
+    def refresh_editor_theme_combo(self):
+        current = self.editor_theme_combo.currentText() if hasattr(self, "editor_theme_combo") else ""
+        self.editor_theme_combo.clear()
+        self.editor_theme_combo.addItems(ThemeManager.get_themes(self.get_custom_themes()).keys())
+        if current:
+            self.editor_theme_combo.setCurrentText(current)
+        self.load_custom_theme_list()
+
+    def load_custom_theme_list(self):
+        if not hasattr(self, "custom_theme_list"):
+            return
+        self.custom_theme_list.clear()
+        self.custom_theme_list.addItems(self.get_custom_themes().keys())
+
+    def load_selected_custom_theme(self, current, previous=None):
+        if not current:
+            return
+        name = current.text()
+        theme = self.get_custom_themes().get(name)
+        if theme:
+            export_theme = {key: theme[key] for key in ("app", "editor", "syntax")}
+            export_theme["name"] = theme.get("name", name)
+            self.theme_json_edit.setPlainText(json.dumps(
+                export_theme,
+                indent=2
+            ))
+
+    def save_custom_theme(self):
+        theme = self.read_theme_json()
+        name = theme.get("name", "").strip() if theme else ""
+
+        if not name or name in ThemeManager.DEFAULT_THEMES:
+            QMessageBox.warning(self, "Theme", "Use a unique custom theme name.")
+            return
+        if not theme:
+            QMessageBox.warning(self, "Theme", "Theme JSON must be valid and include a name.")
+            return
+
+        themes = self.get_custom_themes()
+        themes[name] = theme
+        self.set_custom_themes(themes)
+        self.refresh_editor_theme_combo()
+        self.editor_theme_combo.setCurrentText(name)
+
+    def delete_custom_theme(self):
+        name = self.get_selected_custom_theme_name()
+        themes = self.get_custom_themes()
+        if name in themes:
+            was_selected = self.editor_theme_combo.currentText() == name
+            del themes[name]
+            self.set_custom_themes(themes)
+            self.refresh_editor_theme_combo()
+            self.theme_json_edit.clear()
+            if was_selected:
+                self.editor_theme_combo.setCurrentText("Light")
+
+    def use_selected_custom_theme(self):
+        current = self.custom_theme_list.currentItem()
+        if current:
+            self.editor_theme_combo.setCurrentText(current.text())
+
+    def get_selected_custom_theme_name(self):
+        current = self.custom_theme_list.currentItem()
+        if current:
+            return current.text()
+        theme = self.read_theme_json()
+        return theme.get("name", "").strip() if theme else ""
+
+    def get_custom_themes(self):
+        if hasattr(self, "_custom_themes"):
+            return dict(self._custom_themes)
+        self._custom_themes = self.settings_manager.get_custom_themes()
+        return dict(self._custom_themes)
+
+    def set_custom_themes(self, themes):
+        self._custom_themes = ThemeManager.normalize_custom_themes(themes)
+
+    def read_theme_json(self):
+        text = self.theme_json_edit.toPlainText().strip()
+        if not text:
+            return None
+        try:
+            return ThemeManager.normalize_theme(json.loads(text))
+        except json.JSONDecodeError:
+            return None
+
+    def format_theme_json(self):
+        theme = self.read_theme_json()
+        if not theme:
+            QMessageBox.warning(self, "Theme", "Theme JSON is not valid.")
+            return
+        self.theme_json_edit.setPlainText(json.dumps(
+            {key: theme[key] for key in ("name", "app", "editor", "syntax")},
+            indent=2
+        ))
 
     def load_search_sites(self):
         """Load search sites from settings"""
@@ -128,7 +300,7 @@ class SettingsDialog(QDialog):
     def add_search_site(self):
         """Add new search site"""
         dialog = SearchSiteDialog(self)
-        if dialog.exec_():
+        if dialog.exec():
             name, site = dialog.get_data()
             self.search_list.addItem(f"{name}: {site}")
 
@@ -138,7 +310,7 @@ class SettingsDialog(QDialog):
         if current:
             name, site = current.text().split(': ', 1)
             dialog = SearchSiteDialog(self, name, site)
-            if dialog.exec_():
+            if dialog.exec():
                 new_name, new_site = dialog.get_data()
                 current.setText(f"{new_name}: {new_site}")
 
@@ -166,7 +338,11 @@ class SettingsDialog(QDialog):
             'homepage': self.homepage_edit.text(),
             'search_sites': self.get_search_sites(),
             'user_dictionary': self.get_user_dictionary(),
-            'ui_theme': self.theme_combo.currentText()
+            'theme': self.editor_theme_combo.currentText(),
+            'custom_themes': self.get_custom_themes(),
+            'icon_contrast': self.icon_contrast_combo.currentText(),
+            'markdown_scroll_sync': self.markdown_scroll_sync_check.isChecked(),
+            'editor_line_numbers': self.editor_line_numbers_check.isChecked()
         }
 
     def get_search_sites(self):

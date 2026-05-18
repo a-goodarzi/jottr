@@ -5,11 +5,11 @@ set -e
 cd "$(dirname "$0")/../.."
 
 # Clean up any previous builds or installations
-rm -rf build/ dist/ *.egg-info/
+rm -rf build/ dist/ *.egg-info/ src/*.egg-info/
 
 # Install build dependencies
 sudo apt-get update
-sudo apt-get install -y devscripts debhelper python3-all python3-setuptools python3-enchant python3-pyqt5.qtsvg
+sudo apt-get install -y devscripts debhelper python3-all python3-setuptools python3-enchant python3-pyqt6.qtsvg
 
 # Create debian directory link
 rm -rf debian

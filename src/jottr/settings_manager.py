@@ -1,8 +1,7 @@
 import json
 import os
-from PyQt5.QtGui import QFont
+from PyQt6.QtGui import QFont
 import time
-from PyQt5.QtWidgets import QApplication, QStyleFactory
 import sys
 
 class SettingsManager:
@@ -14,8 +13,11 @@ class SettingsManager:
             "font_weight": 50,
             "font_italic": False,
             "theme": "default",
-            "ui_theme": "light",
+            "custom_themes": {},
+            "icon_contrast": "auto",
             "spell_check": True,
+            "markdown_scroll_sync": True,
+            "editor_line_numbers": True,
             "search_sites": {
                 "AP News": "site:apnews.com",
                 "Reuters": "site:reuters.com",
@@ -26,6 +28,8 @@ class SettingsManager:
             "pane_states": {
                 "snippets_visible": False,
                 "browser_visible": False,
+                "markdown_preview_visible": False,
+                "markdown_sizes": [600, 600],
                 "sizes": [700, 300, 300]
             }
         }
@@ -97,6 +101,7 @@ class SettingsManager:
                 with open(settings_path, 'r', encoding='utf-8') as f:
                     saved_settings = json.load(f)
                     self.settings.update(saved_settings)
+                    self.settings["custom_themes"] = self.get_custom_themes()
             except Exception as e:
                 print(f"Error loading settings: {str(e)}")
 
@@ -123,10 +128,26 @@ class SettingsManager:
         self.save_settings()
 
     def get_theme(self):
-        return self.settings["theme"]
+        theme = self.settings.get("theme", "Light")
+        if theme == "default":
+            return "Light"
+        return theme
 
     def save_theme(self, theme):
         self.settings["theme"] = theme
+        self.save_settings()
+
+    def get_custom_themes(self):
+        from theme_manager import ThemeManager
+
+        return ThemeManager.normalize_custom_themes(
+            self.settings.get("custom_themes", {})
+        )
+
+    def save_custom_themes(self, custom_themes):
+        from theme_manager import ThemeManager
+
+        self.settings["custom_themes"] = ThemeManager.normalize_custom_themes(custom_themes)
         self.save_settings()
 
     def get_pane_visibility(self):
@@ -291,24 +312,3 @@ class SettingsManager:
                 json.dump(self.settings, f)
         except Exception as e:
             print(f"Failed to save setting {key}: {str(e)}")
-
-    def get_ui_theme(self):
-        """Get current UI theme setting"""
-        return self.settings.get('ui_theme', 'system')
-
-    def save_ui_theme(self, theme):
-        """Save UI theme setting"""
-        self.settings['ui_theme'] = theme
-        self.save_settings()
-
-    def apply_ui_theme(self, theme):
-        """Apply UI theme to application"""
-        if theme == 'system':
-            # Use system default theme
-            QApplication.setStyle(QStyleFactory.create('Fusion'))
-        else:
-            # Apply custom theme
-            QApplication.setStyle(QStyleFactory.create(theme))
-        
-        # Save the theme
-        self.save_ui_theme(theme) 

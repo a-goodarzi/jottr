@@ -6,26 +6,25 @@ if sys.version_info < (3, 10):
 import os
 import json
 import hashlib
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget, 
-                            QVBoxLayout, QHBoxLayout, QSplitter, QMenu, QToolBar, QAction, QStyle, QMessageBox, QFontDialog, QStyleFactory, QLabel, QDialog, QSizePolicy, QDialogButtonBox, QTabBar, QFileDialog, QShortcut, QToolButton)
-from PyQt5.QtCore import Qt, QUrl, QTimer
-from PyQt5.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget, 
+                            QVBoxLayout, QHBoxLayout, QSplitter, QMenu, QToolBar, QMessageBox, QFontDialog, QLabel, QDialog, QSizePolicy, QDialogButtonBox, QTabBar, QFileDialog, QToolButton)
+from PyQt6.QtCore import Qt, QUrl, QTimer, QEvent
+from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtGui import QAction, QShortcut
 from editor_tab import EditorTab
 from snippet_manager import SnippetManager
 from rss_tab import RSSTab
 import feedparser
-from PyQt5.QtGui import QIcon, QDesktopServices, QKeySequence
+from PyQt6.QtGui import QIcon, QDesktopServices, QKeySequence, QColor
 from theme_manager import ThemeManager
 from settings_manager import SettingsManager
-from PyQt5.QtGui import QPixmap
-from PyQt5.QtCore import QByteArray
+from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import QByteArray
 from settings_dialog import SettingsDialog
-from PyQt5.QtGui import QFont
-from PyQt5.QtSvg import QSvgRenderer
-from PyQt5.QtGui import QPainter
-from PyQt5.QtCore import QSize
-from PyQt5.QtGui import QPalette, QColor
-
+from PyQt6.QtGui import QFont
+from PyQt6.QtSvg import QSvgRenderer
+from PyQt6.QtGui import QPainter
+from PyQt6.QtCore import QSize
 # Add vendor directory to path
 vendor_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'vendor')
 if os.path.exists(vendor_dir):
@@ -45,9 +44,6 @@ class TextEditorApp(QMainWindow):
         
         # Create snippet manager with settings manager
         self.snippet_manager = SnippetManager(self.settings_manager)
-        
-        # Force light mode by setting a light palette and style
-        self.set_light_mode()
         
         # Load icons from Base64-encoded SVG data
         self.icons = {
@@ -94,16 +90,10 @@ class TextEditorApp(QMainWindow):
         self.settings_manager = SettingsManager()
         self.snippet_manager = SnippetManager(self.settings_manager)
         
-        # Force light mode by setting a light palette and style
-        self.set_light_mode()
-        
         # Create toolbar first before styling
         self.toolbar = QToolBar("Main Toolbar")  # Add name here
         self.toolbar.setObjectName("mainToolBar")  # Add this line
         self.toolbar.setMovable(False)
-        
-        # Now we can safely set platform style since toolbar exists
-        self.setup_platform_style()
         
         # Setup toolbar contents
         self.setup_toolbar()
@@ -113,21 +103,24 @@ class TextEditorApp(QMainWindow):
         
         # Set initial status message
         self.statusBar.showMessage("Words: 0 | Characters: 0")
+        self.statusBar.setObjectName("statusBar")
         
         # Create main widget and layout
         main_widget = QWidget()
+        main_widget.setObjectName("mainSurface")
         self.setCentralWidget(main_widget)
         layout = QVBoxLayout(main_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
         
         # Create tab widget
         self.tab_widget = QTabWidget()
+        self.tab_widget.setObjectName("documentTabs")
+        self.tab_widget.setDocumentMode(False)
+        self.tab_widget.setMovable(True)
+        self.tab_widget.setUsesScrollButtons(True)
         self.tab_widget.setTabsClosable(True)
         self.tab_widget.tabCloseRequested.connect(self.close_tab)
-        self.tab_widget.setStyleSheet("""
-            QTabWidget::tab-bar {
-                alignment: left;
-            }
-        """)
         
         # Install event filter on the tab bar
         self.tab_widget.tabBar().installEventFilter(self)
@@ -144,171 +137,90 @@ class TextEditorApp(QMainWindow):
         if file_path:
             self.open_file_path(file_path)
         
+        self.apply_app_style()
         self.setup_shortcuts()  # Add this line after setup_toolbar()
-        
-    def set_light_mode(self):
-        """Force the application to use a light theme, ignoring the OS dark mode."""
-        # Set a light style (e.g., "Fusion" or "Windows")
-        QApplication.setStyle(QStyleFactory.create("Fusion"))
-        
-        # Create a light palette
-        palette = QPalette()
-        palette.setColor(QPalette.Window, QColor(240, 240, 240))  # Light gray background
-        palette.setColor(QPalette.WindowText, QColor(0, 0, 0))    # Black text
-        palette.setColor(QPalette.Base, QColor(255, 255, 255))    # White base
-        palette.setColor(QPalette.AlternateBase, QColor(240, 240, 240))  # Light gray alternate base
-        palette.setColor(QPalette.ToolTipBase, QColor(255, 255, 255))     # White tooltip background
-        palette.setColor(QPalette.ToolTipText, QColor(0, 0, 0))          # Black tooltip text
-        palette.setColor(QPalette.Text, QColor(0, 0, 0))                 # Black text
-        palette.setColor(QPalette.Button, QColor(240, 240, 240))         # Light gray buttons
-        palette.setColor(QPalette.ButtonText, QColor(0, 0, 0))          # Black button text
-        palette.setColor(QPalette.BrightText, QColor(255, 0, 0))         # Bright red text
-        palette.setColor(QPalette.Highlight, QColor(0, 120, 215))        # Blue highlight
-        palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))# White highlighted text
-        
-        # Apply the palette
-        QApplication.setPalette(palette)
 
-    def setup_platform_style(self):
-        """Apply platform-specific styling"""
-        platform = sys.platform
-        
-        if platform == 'darwin':  # macOS
-            self.setUnifiedTitleAndToolBarOnMac(True)
-            if hasattr(self, 'toolbar'):
-                self.toolbar.setMovable(False)
-                style = """
-                    QToolBar {
-                        border: none;
-                        spacing: 4px;
-                        background: transparent;
-                    }
-                    QToolButton {
-                        border: none;
-                        border-radius: 4px;
-                        padding: 4px;
-                    }
-                    QToolButton:hover {
-                        background-color: rgba(0, 0, 0, 0.1);
-                    }
-                """
-                self.setStyleSheet(style)
-        
-        elif platform == 'win32':  # Windows
-            style = """
-                QToolBar {
-                    border: none;
-                    background: #f0f0f0;
-                    spacing: 2px;
-                    padding: 2px;
-                }
-                QToolButton {
-                    border: 1px solid transparent;
-                    border-radius: 2px;
-                    padding: 4px;
-                    min-width: 28px;
-                    min-height: 28px;
-                }
-                QToolButton:hover {
-                    border-color: #c0c0c0;
-                    background-color: #e8e8e8;
-                }
-            """
-            self.setStyleSheet(style)
-        
-        else:  # Linux/Unix
-            # Use minimal styling to preserve system theme
-            style = """
-                QToolBar {
-                    spacing: 2px;
-                }
-                QToolButton {
-                    border-radius: 2px;
-                    padding: 4px;
-                }
-            """
-            self.setStyleSheet(style)
-            
-            # Try to use the system style
-            if QStyleFactory.keys():
-                system_style = None
-                available_styles = QStyleFactory.keys()
-                
-                # Try to find the best system style
-                preferred_styles = ['fusion', 'breeze', 'gtk2', 'oxygen']
-                for style_name in preferred_styles:
-                    if style_name.lower() in [s.lower() for s in available_styles]:
-                        system_style = QStyleFactory.create(style_name)
-                        break
-                
-                # Fallback to the first available style if none of the preferred ones are found
-                if not system_style and available_styles:
-                    system_style = QStyleFactory.create(available_styles[0])
-                
-                if system_style:
-                    QApplication.setStyle(system_style)
+    def apply_app_style(self):
+        """Apply the quiet writing-focused application chrome."""
+        theme = ThemeManager.get_theme(
+            self.settings_manager.get_theme(),
+            self.settings_manager.get_custom_themes()
+        )
+        self.setStyleSheet(ThemeManager.build_app_stylesheet(theme))
+        self.update_action_icons()
+
+    def get_icon_color(self):
+        """Return the configured icon color for the active app theme."""
+        mode = self.settings_manager.get_setting("icon_contrast", "auto")
+        theme = ThemeManager.get_theme(
+            self.settings_manager.get_theme(),
+            self.settings_manager.get_custom_themes()
+        )
+        app = theme["app"]
+
+        if mode == "light":
+            return "#f8f8f2"
+        if mode == "dark":
+            return "#17202a"
+        if mode == "accent":
+            return app["accent"]
+        return app["text"]
+
+    def build_themed_icon(self, icon_name):
+        icon_data = self.icons.get(icon_name)
+        if not icon_data or not icon_data.startswith('data:image/svg+xml;base64,'):
+            return QIcon()
+
+        base64_data = icon_data.split(',')[1]
+        svg_data = QByteArray.fromBase64(base64_data.encode())
+        renderer = QSvgRenderer(svg_data)
+        pixmap = QPixmap(48, 48)
+        pixmap.fill(Qt.GlobalColor.transparent)
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        renderer.render(painter)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+        painter.fillRect(pixmap.rect(), QColor(self.get_icon_color()))
+        painter.end()
+
+        icon = QIcon()
+        icon.addPixmap(pixmap, QIcon.Mode.Normal, QIcon.State.Off)
+        icon.addPixmap(
+            pixmap.scaled(
+                24, 24,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            ),
+            QIcon.Mode.Normal,
+            QIcon.State.Off
+        )
+        return icon
+
+    def update_action_icons(self):
+        if not hasattr(self, "icon_actions"):
+            return
+        for action, icon_name in self.icon_actions:
+            action.setIcon(self.build_themed_icon(icon_name))
         
     def setup_toolbar(self):
         """Setup the main toolbar"""
         self.toolbar = QToolBar("Main Toolbar")
         self.toolbar.setObjectName("mainToolBar")
         self.toolbar.setMovable(False)
+        self.toolbar.setFloatable(False)
         
         # Add toolbar to main window
         self.addToolBar(self.toolbar)
         
-        self.toolbar.setStyleSheet("""
-            QToolBar {
-                border: none;
-                background: palette(window);
-            }
-            QToolButton {
-                padding: 4px;
-                border: none;
-            }
-            QToolButton:hover {
-                background-color: palette(highlight);
-                color: palette(highlighted-text);
-            }
-            QToolButton::menu-button {
-                border: none;
-                width: 16px;
-            }
-            QToolButton[popupMode="2"] {
-                padding-right: 16px;
-            }
-            /* Fix for overflow menu button on macOS */
-            QToolButton#qt_toolbar_ext_button {
-                background: palette(window);
-                width: 24px;
-                padding: 4px;
-                color: palette(text);
-                font-weight: bold;
-            }
-            QToolButton#qt_toolbar_ext_button:hover {
-                background: palette(highlight);
-                color: palette(highlighted-text);
-            }
-            /* Fix for overflow menu */
-            QMenu {
-                background: palette(window);
-                border: 1px solid palette(mid);
-            }
-            QMenu::item {
-                padding: 4px 20px;
-            }
-            QMenu::item:selected {
-                background: palette(highlight);
-                color: palette(highlighted-text);
-            }
-        """)
-        
         # Prevent toolbar from being hidden
-        self.toolbar.setContextMenuPolicy(Qt.PreventContextMenu)
+        self.toolbar.setContextMenuPolicy(Qt.ContextMenuPolicy.PreventContextMenu)
         
         # Set toolbar properties for better icon rendering
-        self.toolbar.setIconSize(QSize(24, 24))
-        self.toolbar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        self.toolbar.setIconSize(QSize(22, 22))
+        self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.icon_actions = []
 
         # Helper function to create themed action
         def create_action(icon_name, text, handler=None):
@@ -316,34 +228,14 @@ class TextEditorApp(QMainWindow):
             if icon_data:
                 # Convert base64 data URL to QIcon
                 if icon_data.startswith('data:image/svg+xml;base64,'):
-                    base64_data = icon_data.split(',')[1]
-                    svg_data = QByteArray.fromBase64(base64_data.encode())
-                    renderer = QSvgRenderer(svg_data)
-                    
-                    # Create high-res pixmap for better quality
-                    pixmap = QPixmap(48, 48)  # Double size for high DPI
-                    pixmap.fill(Qt.transparent)
-                    
-                    # Enable high quality rendering
-                    painter = QPainter(pixmap)
-                    painter.setRenderHint(QPainter.Antialiasing)
-                    painter.setRenderHint(QPainter.SmoothPixmapTransform)
-                    
-                    # Render SVG
-                    renderer.render(painter)
-                    painter.end()
-                    
-                    # Create icon and set all sizes
-                    icon = QIcon()
-                    icon.addPixmap(pixmap, QIcon.Normal, QIcon.Off)
-                    icon.addPixmap(pixmap.scaled(24, 24, Qt.KeepAspectRatio, Qt.SmoothTransformation), 
-                                 QIcon.Normal, QIcon.Off)
-                    
-                    action = QAction(icon, text, self)
+                    action = QAction(self.build_themed_icon(icon_name), text, self)
+                    self.icon_actions.append((action, icon_name))
                 else:
                     action = QAction(text, self)
             else:
                 action = QAction(text, self)
+            action.setToolTip(text)
+            action.setStatusTip(text)
             if handler:
                 action.triggered.connect(handler)
             return action
@@ -352,42 +244,49 @@ class TextEditorApp(QMainWindow):
         self.menu_dropdown = QMenu(self)
         
         # Add actions to dropdown menu
-        self.menu_dropdown.addAction(create_action("settings", "Settings", self.show_settings))
+        settings_action = create_action("settings", "Settings", self.show_settings)
+        settings_action.setToolTip("Open Settings")
+        self.menu_dropdown.addAction(settings_action)
         self.menu_dropdown.addSeparator()
-        self.menu_dropdown.addAction(create_action("help", "Help", self.show_help))
-        self.menu_dropdown.addAction(create_action("about", "About", self.show_about))
+        help_action = create_action("help", "Help", self.show_help)
+        help_action.setToolTip("Open Help")
+        self.menu_dropdown.addAction(help_action)
+        about_action = create_action("about", "About", self.show_about)
+        about_action.setToolTip("About Jottr")
+        self.menu_dropdown.addAction(about_action)
 
         # Add all toolbar items
         new_action = create_action("new", "New", self.new_editor_tab)
-        new_action.setShortcut(QKeySequence.New)
+        new_action.setShortcut(QKeySequence.StandardKey.New)
         new_action.setToolTip(f"New (Ctrl+N)")
         self.toolbar.addAction(new_action)
         
         open_action = create_action("open", "Open", self.open_file_dialog)
-        open_action.setShortcut(QKeySequence.Open)
+        open_action.setShortcut(QKeySequence.StandardKey.Open)
         open_action.setToolTip(f"Open (Ctrl+O)")
         self.toolbar.addAction(open_action)
         
         save_action = create_action("save", "Save", self.save_file)
-        save_action.setShortcut(QKeySequence.Save)
+        save_action.setShortcut(QKeySequence.StandardKey.Save)
         save_action.setToolTip(f"Save (Ctrl+S)")
         self.toolbar.addAction(save_action)
         
         save_as_action = create_action("save-as", "Save As", self.save_file_as)
-        save_as_action.setShortcut(QKeySequence.SaveAs)
+        save_as_action.setShortcut(QKeySequence.StandardKey.SaveAs)
         save_as_action.setToolTip(f"Save As (Ctrl+Shift+S)")
-        self.toolbar.addAction(save_as_action)
+        self.menu_dropdown.insertAction(self.menu_dropdown.actions()[0], save_as_action)
+        self.menu_dropdown.insertSeparator(self.menu_dropdown.actions()[1])
         
         self.toolbar.addSeparator()
         
         # Undo/Redo
         undo_action = create_action("undo", "Undo", self.undo)
-        undo_action.setShortcut(QKeySequence.Undo)
+        undo_action.setShortcut(QKeySequence.StandardKey.Undo)
         undo_action.setToolTip(f"Undo (Ctrl+Z)")
         self.toolbar.addAction(undo_action)
 
         redo_action = create_action("redo", "Redo", self.redo)
-        redo_action.setShortcut(QKeySequence.Redo)
+        redo_action.setShortcut(QKeySequence.StandardKey.Redo)
         redo_action.setToolTip(f"Redo (Ctrl+Shift+Z)")
         self.toolbar.addAction(redo_action)
         
@@ -401,11 +300,19 @@ class TextEditorApp(QMainWindow):
         focus_action = create_action("focus-mode", "Focus Mode", self.toggle_focus_mode)
         focus_action.setShortcut(QKeySequence("Ctrl+Shift+D"))
         focus_action.setToolTip(f"Focus Mode (Ctrl+Shift+D)")
+        focus_action.setCheckable(True)
         self.toolbar.addAction(focus_action)
+        self.focus_mode_action = focus_action
         
+        self.toolbar.addSeparator()
+
         # Font and Theme
-        self.toolbar.addAction(create_action("font", "Font", self.show_font_dialog))
-        self.toolbar.addAction(create_action("theme", "Theme", self.show_theme_menu))
+        font_action = create_action("font", "Font", self.show_font_dialog)
+        font_action.setToolTip("Choose Editor Font")
+        self.toolbar.addAction(font_action)
+        theme_action = create_action("theme", "Theme", self.show_theme_menu)
+        theme_action.setToolTip("Choose Editor Theme")
+        self.toolbar.addAction(theme_action)
         
         # View toggles
         snippets_action = create_action("snippets", "Snippets", lambda: self.toggle_snippets())
@@ -417,34 +324,44 @@ class TextEditorApp(QMainWindow):
         browser_action.setShortcut(QKeySequence("Ctrl+Shift+B"))
         browser_action.setToolTip(f"Toggle Browser (Ctrl+Shift+B)")
         self.toolbar.addAction(browser_action)
+
+        markdown_action = create_action("insert-text", "Markdown", self.toggle_markdown_preview)
+        markdown_action.setShortcut(QKeySequence("Ctrl+Shift+M"))
+        markdown_action.setToolTip("Toggle Markdown Preview (Ctrl+Shift+M)")
+        self.toolbar.addAction(markdown_action)
         
         # Zoom controls
         zoom_in_action = create_action("zoom-in", "Zoom In", self.zoom_in)
         zoom_in_action.setShortcut(QKeySequence("Ctrl+="))
         zoom_in_action.setToolTip(f"Zoom In (Ctrl+=)")
-        self.toolbar.addAction(zoom_in_action)
 
         zoom_out_action = create_action("zoom-out", "Zoom Out", self.zoom_out)
         zoom_out_action.setShortcut(QKeySequence("Ctrl+-"))
         zoom_out_action.setToolTip(f"Zoom Out (Ctrl+-)")
-        self.toolbar.addAction(zoom_out_action)
+        self.menu_dropdown.insertAction(self.menu_dropdown.actions()[0], zoom_in_action)
+        self.menu_dropdown.insertAction(self.menu_dropdown.actions()[1], zoom_out_action)
 
-        self.toolbar.addAction(create_action("zoom-reset", "Reset Zoom", self.zoom_reset))
+        zoom_reset_action = create_action("zoom-reset", "Reset Zoom", self.zoom_reset)
+        zoom_reset_action.setToolTip("Reset Zoom")
+        self.menu_dropdown.insertAction(self.menu_dropdown.actions()[2], zoom_reset_action)
+        self.menu_dropdown.insertSeparator(self.menu_dropdown.actions()[3])
         
         # Add flexible space
         spacer = QWidget()
-        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.toolbar.addWidget(spacer)
         
         # Menu button at far right
-        self.toolbar.addAction(create_action("menu", "Menu", self.show_menu_dropdown))
+        menu_action = create_action("menu", "Menu", self.show_menu_dropdown)
+        menu_action.setToolTip("More Actions")
+        self.toolbar.addAction(menu_action)
 
         # Now set the overflow button text after all items are added
         def update_overflow_button():
             overflow_button = self.toolbar.findChild(QToolButton, "qt_toolbar_ext_button")
             if overflow_button:
                 overflow_button.setText(">>")
-                overflow_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+                overflow_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         
         # Use a single-shot timer to ensure the overflow button exists
         QTimer.singleShot(0, update_overflow_button)
@@ -494,14 +411,14 @@ class TextEditorApp(QMainWindow):
                 self,
                 "Unsaved Changes",
                 "This document has unsaved changes. Do you want to save them?",
-                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel
             )
             
-            if reply == QMessageBox.Save:
+            if reply == QMessageBox.StandardButton.Save:
                 self.tab_widget.setCurrentIndex(index)
                 if not tab.save_file():  # If save is cancelled
                     return
-            elif reply == QMessageBox.Cancel:
+            elif reply == QMessageBox.StandardButton.Cancel:
                 return
         
         self.tab_widget.removeTab(index)
@@ -517,19 +434,19 @@ class TextEditorApp(QMainWindow):
         file_menu = menubar.addMenu('File')
         
         new_action = file_menu.addAction('New Editor Tab', self.new_editor_tab)
-        new_action.setShortcut(QKeySequence.New)
+        new_action.setShortcut(QKeySequence.StandardKey.New)
         
         file_menu.addAction('New RSS Tab', self.new_rss_tab)
         file_menu.addSeparator()
         
         save_action = file_menu.addAction('Save', self.save_file)
-        save_action.setShortcut(QKeySequence.Save)
+        save_action.setShortcut(QKeySequence.StandardKey.Save)
         
         save_as_action = file_menu.addAction('Save As...', self.save_file_as)
-        save_as_action.setShortcut(QKeySequence.SaveAs)  # Typically Ctrl+Shift+S
+        save_as_action.setShortcut(QKeySequence.StandardKey.SaveAs)  # Typically Ctrl+Shift+S
         
         open_action = file_menu.addAction('Open', self.open_file_dialog)
-        open_action.setShortcut(QKeySequence.Open)
+        open_action.setShortcut(QKeySequence.StandardKey.Open)
         
         file_menu.addSeparator()
         file_menu.addAction('Exit', self.close)
@@ -542,6 +459,9 @@ class TextEditorApp(QMainWindow):
         
         browser_action = view_menu.addAction('Toggle Browser', self.toggle_browser)
         browser_action.setShortcut(QKeySequence("Ctrl+Shift+B"))
+
+        markdown_action = view_menu.addAction('Toggle Markdown Preview', self.toggle_markdown_preview)
+        markdown_action.setShortcut(QKeySequence("Ctrl+Shift+M"))
         
         view_menu.addSeparator()
         
@@ -592,27 +512,25 @@ class TextEditorApp(QMainWindow):
         menu = QMenu(self)
         
         # Add editor themes
-        for theme_name in ThemeManager.get_themes():
+        for theme_name in ThemeManager.get_themes(self.settings_manager.get_custom_themes()):
             action = menu.addAction(theme_name)
             action.triggered.connect(lambda checked, tn=theme_name: self.apply_theme(tn))
         
         # Show menu under theme button
         button = self.toolbar.widgetForAction(self.sender())
-        menu.exec_(button.mapToGlobal(button.rect().bottomLeft()))
-
-    def apply_ui_theme(self, theme):
-        """Apply UI theme to application"""
-        self.settings_manager.apply_ui_theme(theme)
-        
-        # Update all widgets
-        QApplication.setStyle(QStyleFactory.create(theme))
-        self.update()
+        menu.exec(button.mapToGlobal(button.rect().bottomLeft()))
 
     def apply_theme(self, theme_name):
-        if editor_tab := self.tab_widget.currentWidget():
-            if isinstance(editor_tab, EditorTab):
-                editor_tab.apply_theme(theme_name)
-                self.settings_manager.save_theme(theme_name)
+        self.settings_manager.save_theme(theme_name)
+        self.apply_editor_theme_to_tabs(theme_name)
+
+    def apply_editor_theme_to_tabs(self, theme_name):
+        """Apply an app/editor theme to all open editor tabs."""
+        self.apply_app_style()
+        for index in range(self.tab_widget.count()):
+            tab = self.tab_widget.widget(index)
+            if isinstance(tab, EditorTab):
+                tab.apply_theme(theme_name)
 
     def toggle_snippets(self):
         """Toggle snippets pane in current tab"""
@@ -628,6 +546,8 @@ class TextEditorApp(QMainWindow):
                 tab = self.new_editor_tab()
                 tab.editor.setPlainText(content)
                 tab.current_file = file_path
+                if tab.is_markdown_file(file_path):
+                    tab.set_markdown_preview_visible(True)
                 current_index = self.tab_widget.indexOf(tab)
                 self.tab_widget.setTabText(current_index, os.path.basename(file_path))
                 return True
@@ -722,6 +642,7 @@ class TextEditorApp(QMainWindow):
         # Set content and make read-only
         help_tab.editor.setPlainText(help_content)
         help_tab.editor.setReadOnly(True)
+        help_tab.set_markdown_preview_visible(True)
         
         # Set tab title
         current_index = self.tab_widget.indexOf(help_tab)
@@ -739,17 +660,17 @@ class TextEditorApp(QMainWindow):
         # App name
         title_label = QLabel(APP_NAME)
         title_label.setStyleSheet("font-size: 18pt; font-weight: bold;")
-        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title_label)
         
         # Version
         version_label = QLabel(f"Version {APP_VERSION}")
-        version_label.setAlignment(Qt.AlignCenter)
+        version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(version_label)
         
         # Description
         desc_label = QLabel("A simple text editor for writers, journalists and researchers")
-        desc_label.setAlignment(Qt.AlignCenter)
+        desc_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(desc_label)
         
         # Add some spacing
@@ -757,33 +678,38 @@ class TextEditorApp(QMainWindow):
         
         # Developer
         dev_label = QLabel("Developed by mFat")
-        dev_label.setAlignment(Qt.AlignCenter)
+        dev_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(dev_label)
         
         # License
         license_label = QLabel("Licensed under GNU GPL v3.0")
-        license_label.setAlignment(Qt.AlignCenter)
+        license_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(license_label)
         
         # Homepage link
         link_label = QLabel(f'<a href="{APP_HOMEPAGE}">Project Homepage</a>')
         link_label.setOpenExternalLinks(True)
-        link_label.setAlignment(Qt.AlignCenter)
+        link_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(link_label)
         
         # Add button box
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok)
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
         button_box.accepted.connect(about_dialog.accept)
         button_box.setCenterButtons(True)  # Center the OK button
         layout.addWidget(button_box)
         
-        about_dialog.exec_()
+        about_dialog.exec()
 
     def toggle_focus_mode(self):
         """Toggle focus mode for current editor tab"""
         current_tab = self.tab_widget.currentWidget()
         if current_tab and isinstance(current_tab, EditorTab):
             current_tab.toggle_focus_mode()
+
+    def update_focus_mode_action(self, checked):
+        """Keep the focus toolbar action in sync with the active editor."""
+        if hasattr(self, 'focus_mode_action'):
+            self.focus_mode_action.setChecked(checked)
 
     def zoom_in(self):
         """Increase editor font size"""
@@ -820,21 +746,39 @@ class TextEditorApp(QMainWindow):
     def show_settings(self):
         """Show settings dialog"""
         dialog = SettingsDialog(self.settings_manager, self)
-        if dialog.exec_() == QDialog.Accepted:
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             settings = dialog.get_data()
             
             # Save settings
             self.settings_manager.save_setting('homepage', settings['homepage'])
             self.settings_manager.save_setting('search_sites', settings['search_sites'])
             self.settings_manager.save_setting('user_dictionary', settings['user_dictionary'])
-            self.settings_manager.save_setting('ui_theme', settings['ui_theme'])
-            self.apply_ui_theme(settings['ui_theme'])  # Apply the new theme immediately
+            self.settings_manager.save_custom_themes(settings['custom_themes'])
+            self.settings_manager.save_theme(settings['theme'])
+            self.settings_manager.save_setting('icon_contrast', settings['icon_contrast'])
+            self.settings_manager.save_setting('markdown_scroll_sync', settings['markdown_scroll_sync'])
+            self.settings_manager.save_setting('editor_line_numbers', settings['editor_line_numbers'])
+            self.apply_editor_theme_to_tabs(settings['theme'])
+            self.apply_editor_line_numbers(settings['editor_line_numbers'])
 
     def toggle_browser(self):
         """Toggle browser pane in current tab"""
         current_tab = self.tab_widget.currentWidget()
         if current_tab:
             current_tab.toggle_pane("browser")
+
+    def apply_editor_line_numbers(self, visible):
+        """Apply line number visibility to all open editor tabs."""
+        for i in range(self.tab_widget.count()):
+            tab = self.tab_widget.widget(i)
+            if isinstance(tab, EditorTab):
+                tab.set_line_numbers_visible(visible)
+
+    def toggle_markdown_preview(self):
+        """Toggle markdown preview in current editor tab"""
+        current_tab = self.tab_widget.currentWidget()
+        if current_tab and isinstance(current_tab, EditorTab):
+            current_tab.toggle_markdown_preview()
 
     def toggle_find(self):
         """Toggle find/replace in current editor tab"""
@@ -864,7 +808,7 @@ class TextEditorApp(QMainWindow):
 
     def eventFilter(self, obj, event):
         """Handle double-click on empty area of tab bar."""
-        if obj == self.tab_widget.tabBar() and event.type() == event.MouseButtonDblClick:
+        if obj == self.tab_widget.tabBar() and event.type() == QEvent.Type.MouseButtonDblClick:
             # Check if the click was on an empty area (no tab)
             if self.tab_widget.tabBar().tabAt(event.pos()) == -1:
                 self.new_editor_tab()
@@ -885,7 +829,7 @@ class TextEditorApp(QMainWindow):
                 self,
                 "Open File",
                 "",
-                "Text Files (*.txt);;All Files (*.*)"
+                "Markdown Files (*.md *.markdown);;Text Files (*.txt);;All Files (*.*)"
             )
             if not file_path:  # User cancelled
                 return
@@ -898,6 +842,8 @@ class TextEditorApp(QMainWindow):
             with open(file_path, 'r', encoding='utf-8') as f:
                 editor_tab.editor.setPlainText(f.read())
                 editor_tab.current_file = file_path
+                if editor_tab.is_markdown_file(file_path):
+                    editor_tab.set_markdown_preview_visible(True)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not open file: {str(e)}")
             return
@@ -911,8 +857,10 @@ class TextEditorApp(QMainWindow):
     # Add a new method to set up the find shortcut
     def setup_shortcuts(self):
         """Set up additional keyboard shortcuts"""
-        find_shortcut = QShortcut(QKeySequence.Find, self)  # Typically Ctrl+F
+        find_shortcut = QShortcut(QKeySequence.StandardKey.Find, self)  # Typically Ctrl+F
         find_shortcut.activated.connect(self.toggle_find)
+        markdown_shortcut = QShortcut(QKeySequence("Ctrl+Shift+M"), self)
+        markdown_shortcut.activated.connect(self.toggle_markdown_preview)
 
     def handle_unsaved_changes(self):
         """Handle unsaved changes before closing"""
@@ -927,16 +875,16 @@ class TextEditorApp(QMainWindow):
                 self,
                 "Unsaved Changes",
                 "You have unsaved changes. Do you want to save them before closing?",
-                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel
             )
             
-            if reply == QMessageBox.Save:
+            if reply == QMessageBox.StandardButton.Save:
                 for i in unsaved_tabs:
                     self.tab_widget.setCurrentIndex(i)
                     if not self.tab_widget.widget(i).save_file():  # If save is cancelled
                         return False
                 return True
-            elif reply == QMessageBox.Cancel:
+            elif reply == QMessageBox.StandardButton.Cancel:
                 return False
             # If Discard, continue with close
         
@@ -944,8 +892,7 @@ class TextEditorApp(QMainWindow):
 
 def main():
     # Enable high DPI scaling
-    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
-    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
+    # Qt 6 enables high-DPI scaling by default.
     
     # Create application instance
     app = QApplication(sys.argv)
@@ -970,7 +917,7 @@ def main():
     for file_path in file_paths:
         window.open_file(file_path)
     
-    return app.exec_()
+    return app.exec()
 
 if __name__ == "__main__":
     main() 

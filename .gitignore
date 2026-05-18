@@ -3,16 +3,23 @@ dist/
 build/
 __pycache__/
 *.pyc
+*.egg-info/
 
 # Package build artifacts
+*.tar.gz
+packaging/debian/jottr/
 packaging/debian/jottr_*/
+packaging/debian/debhelper-build-stamp
+packaging/debian/files
+packaging/debian/*.substvars
 packaging/rpm/BUILD/
 packaging/rpm/BUILDROOT/
 packaging/rpm/RPMS/
 packaging/rpm/SOURCES/
-packaging/rpm/SRPMS/ 
+packaging/rpm/SRPMS/
 
 .history/
+.codex
 
 src/jottr/Jottr.spec
 src/.DS_Store
@@ -21,4 +28,7 @@ src/.DS_Store
 /repo
 io.github.mfat.jottr-1.4.1.flatpak
 /deb_dist
-/deb_dist
+
+# MemPalace per-project files (issue #185)
+mempalace.yaml
+entities.json

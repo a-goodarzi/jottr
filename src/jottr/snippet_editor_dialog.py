@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLineEdit, 
+from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLineEdit, 
                             QTextEdit, QPushButton, QLabel)
 
 class SnippetEditorDialog(QDialog):
